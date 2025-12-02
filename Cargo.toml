@@ -1,0 +1,10 @@
+[package]
+name = "zipsignerust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zip = "0.5"
+openssl = "0.10"
+flate2 = "1.1"
+bzip2 = "0.4"
