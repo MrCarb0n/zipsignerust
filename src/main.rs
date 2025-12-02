@@ -1,10 +1,9 @@
 /*
- * Android ZIP Signer (Rust Edition)
- * Refactored for Production Readiness, Memory Efficiency, and UX.
- * * Features:
- * - Streaming I/O (Low RAM usage)
+ * Android ZIP Signer v2.1 (Mobile UX Edition)
+ * Features:
+ * - Interactive TUI with File Picker
+ * - Aesthetic Progress Bars (Indicatif)
  * - Strict Certificate Timestamp Inheritance
- * - Full Chain-of-Trust Verification
  */
 
 use std::{
@@ -12,8 +11,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    str,
-    fmt,
+    time::Duration,
+    env,
 };
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use clap::{Arg, ArgAction, Command};
@@ -32,61 +31,287 @@ use zip::{
 };
 use regex::Regex;
 
-// --- Constants ---
+// UI Libraries
+use indicatif::{ProgressBar, ProgressStyle};
+use console::{style, Term};
+use dialoguer::{theme::ColorfulTheme, Select, Input};
+use colored::*;
+
+// --- Constants & Config ---
 const MANIFEST_NAME: &str = "META-INF/MANIFEST.MF";
 const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
-const BUFFER_SIZE: usize = 64 * 1024; // 64KB Copy Buffer
-const APP_NAME: &str = "zipsignerust";
-const APP_VERSION: &str = "2.0.0-pro";
-const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
+const BUFFER_SIZE: usize = 64 * 1024;
+const APP_VERSION: &str = "2.1.0";
 
-// --- Embedded Defaults ---
-// These allow the binary to work "out of the box" without external files.
 const DEFAULT_PRIVATE_KEY: &str = include_str!("../certs/private_key.pem");
 const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
 
-// --- Custom Error Type ---
+// --- Entry Point ---
+fn main() {
+    // If args provided, run CLI mode. If not, run Interactive TUI.
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        run_cli_mode();
+    } else {
+        run_interactive_mode();
+    }
+}
+
+// --- Interactive Mode (TUI) ---
+fn run_interactive_mode() {
+    let term = Term::stdout();
+    term.clear_screen().ok();
+
+    println!("{}", style(r#"
+    ╔═══════════════════════════════════════╗
+    ║      ANDROID ZIP SIGNER RUST          ║
+    ║      v2.1.0 • @MrCarb0n               ║
+    ╚═══════════════════════════════════════╝
+    "#).cyan().bold());
+
+    loop {
+        let choices = &["📦  Sign a File", "🔍  Verify a File", "🚪  Exit"];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select an Action")
+            .default(0)
+            .items(choices)
+            .interact()
+            .unwrap_or(2);
+
+        match selection {
+            0 => interactive_sign(),
+            1 => interactive_verify(),
+            _ => break,
+        }
+    }
+    println!("{}", "See you later, Space Cowboy. 🤠".dimmed());
+}
+
+fn interactive_sign() {
+    println!("\n{}", "--- Select Input ZIP ---".yellow());
+    let input_path = match file_picker(".") {
+        Some(p) => p,
+        None => return,
+    };
+
+    let default_name = input_path.file_stem().unwrap().to_str().unwrap();
+    let default_output = format!("{}_signed.zip", default_name);
+
+    let output_name: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Output Filename")
+        .default(default_output)
+        .interact_text()
+        .unwrap();
+    
+    let output_path = input_path.parent().unwrap().join(output_name);
+
+    run_operation(true, &input_path, Some(&output_path));
+}
+
+fn interactive_verify() {
+    println!("\n{}", "--- Select ZIP to Verify ---".yellow());
+    if let Some(path) = file_picker(".") {
+        run_operation(false, &path, None);
+    }
+}
+
+/// A simple Terminal File Picker suitable for mobile usage
+fn file_picker(start_dir: &str) -> Option<PathBuf> {
+    let mut current_dir = fs::canonicalize(start_dir).unwrap_or_else(|_| PathBuf::from("."));
+    
+    loop {
+        let mut entries: Vec<PathBuf> = fs::read_dir(&current_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        
+        // Sort: Directories first, then files
+        entries.sort_by(|a, b| {
+            let a_is_dir = a.is_dir();
+            let b_is_dir = b.is_dir();
+            if a_is_dir == b_is_dir {
+                a.file_name().cmp(&b.file_name())
+            } else {
+                b_is_dir.cmp(&a_is_dir)
+            }
+        });
+
+        // UI List preparation
+        let mut choices = vec![".. (Go Up)".to_string()];
+        let mut valid_indices = vec![];
+
+        for (i, path) in entries.iter().enumerate() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if path.is_dir() {
+                choices.push(format!("📂 {}", name));
+                valid_indices.push(i);
+            } else if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
+                choices.push(format!("📦 {}", name));
+                valid_indices.push(i);
+            }
+        }
+
+        // Add an option to cancel
+        choices.push("❌ Cancel".to_string());
+
+        // Display Menu
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Browsing: {}", current_dir.display()))
+            .default(0)
+            .items(&choices)
+            .max_length(10) // fit on mobile screen
+            .interact()
+            .unwrap_or(0);
+
+        if selection == 0 {
+            if let Some(parent) = current_dir.parent() {
+                current_dir = parent.to_path_buf();
+            }
+            continue;
+        }
+
+        if selection == choices.len() - 1 {
+            return None; // Canceled
+        }
+
+        let selected_path = &entries[valid_indices[selection - 1]];
+        if selected_path.is_dir() {
+            current_dir = selected_path.clone();
+        } else {
+            return Some(selected_path.clone());
+        }
+    }
+}
+
+// --- CLI Mode ---
+fn run_cli_mode() {
+    let matches = Command::new(APP_NAME)
+        .version(APP_VERSION)
+        .author(APP_AUTHOR)
+        .arg(Arg::new("input").required(true).help("Input ZIP file"))
+        .arg(Arg::new("output").help("Output ZIP file"))
+        .arg(Arg::new("verify").short('v').long("verify").action(ArgAction::SetTrue))
+        .arg(Arg::new("overwrite").short('f').long("overwrite").action(ArgAction::SetTrue))
+        .arg(Arg::new("inplace").short('i').long("inplace").action(ArgAction::SetTrue))
+        .get_matches();
+
+    let input = PathBuf::from(matches.get_one::<String>("input").unwrap());
+    let verify = matches.get_flag("verify");
+    
+    // Determine output path logic
+    let output = if verify {
+        None 
+    } else if matches.get_flag("inplace") {
+        Some(input.clone())
+    } else if let Some(out) = matches.get_one::<String>("output") {
+        Some(PathBuf::from(out))
+    } else {
+        let stem = input.file_stem().unwrap().to_str().unwrap();
+        Some(input.with_file_name(format!("{}_signed.zip", stem)))
+    };
+
+    run_operation(!verify, &input, output.as_ref());
+}
+
+// --- Core Operation Wrapper ---
+fn run_operation(signing: bool, input: &Path, output: Option<&Path>) {
+    // Spinner setup
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}").unwrap());
+    pb.enable_steady_tick(Duration::from_millis(100));
+
+    // 1. Load Keys
+    pb.set_message("Loading Cryptography Engine...");
+    let key_chain = match KeyChain::new() {
+        Ok(k) => k,
+        Err(e) => { pb.finish_with_message(format!("❌ Key Error: {}", e)); return; }
+    };
+
+    // 2. Scan ZIP
+    pb.set_message("Scanning Artifacts...");
+    let digests = match ArtifactProcessor::compute_manifest_digests(input) {
+        Ok(d) => d,
+        Err(e) => { pb.finish_with_message(format!("❌ Read Error: {}", e)); return; }
+    };
+
+    if !signing {
+        // VERIFY MODE
+        pb.set_message("Verifying Signatures...");
+        match ArtifactVerifier::verify(input, &key_chain, &digests) {
+            Ok(true) => {
+                pb.finish_and_clear();
+                println!("{}", "✅ Verification Successful: The file is authentic.".green().bold());
+            },
+            Ok(false) => {
+                pb.finish_and_clear();
+                println!("{}", "❌ Verification Failed: Signature mismatch.".red().bold());
+            },
+            Err(e) => {
+                pb.finish_with_message(format!("❌ Verify Error: {}", e));
+            }
+        }
+        return;
+    }
+
+    // SIGN MODE
+    let output_path = output.unwrap();
+    pb.set_message("Generating Signatures...");
+    
+    // Switch to Bar for writing
+    let write_pb = ProgressBar::new(digests.len() as u64);
+    write_pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+        .unwrap()
+        .progress_chars("#>-"));
+
+    match ArtifactProcessor::write_signed_zip(input, output_path, &key_chain, &digests, &write_pb) {
+        Ok(_) => {
+            write_pb.finish_and_clear();
+            println!("\n{}", "✨ Operation Complete ✨".green().bold());
+            println!("Output saved to: {}", style(output_path.display()).underlined());
+        },
+        Err(e) => {
+            write_pb.finish_with_message(format!("❌ Write Error: {}", e));
+        }
+    }
+}
+
+// =========================================================
+//  LOGIC IMPLEMENTATIONS (Optimized & Decoupled)
+// =========================================================
+
 #[derive(Debug)]
 enum SignerError {
     Io(io::Error),
     Zip(zip::result::ZipError),
     OpenSsl(openssl::error::ErrorStack),
     Validation(String),
-    Config(String),
 }
-
 impl fmt::Display for SignerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SignerError::Io(e) => write!(f, "I/O Error: {}", e),
-            SignerError::Zip(e) => write!(f, "ZIP Structure Error: {}", e),
-            SignerError::OpenSsl(e) => write!(f, "OpenSSL Error: {}", e),
-            SignerError::Validation(e) => write!(f, "Validation Failed: {}", e),
-            SignerError::Config(e) => write!(f, "Configuration Error: {}", e),
+            SignerError::Io(e) => write!(f, "IO: {}", e),
+            SignerError::Zip(e) => write!(f, "ZIP: {}", e),
+            SignerError::OpenSsl(e) => write!(f, "SSL: {}", e),
+            SignerError::Validation(s) => write!(f, "Validation: {}", s),
         }
     }
 }
-
-impl std::error::Error for SignerError {}
-
-// Implement automatic conversions for cleaner code using '?'
 impl From<io::Error> for SignerError { fn from(e: io::Error) -> Self { Self::Io(e) } }
 impl From<zip::result::ZipError> for SignerError { fn from(e: zip::result::ZipError) -> Self { Self::Zip(e) } }
 impl From<openssl::error::ErrorStack> for SignerError { fn from(e: openssl::error::ErrorStack) -> Self { Self::OpenSsl(e) } }
+use std::fmt;
 
-// --- Crypto Engine ---
 struct CryptoEngine;
-
 impl CryptoEngine {
     fn compute_sha1(data: &[u8]) -> String {
         let mut hasher = Sha1::new();
         hasher.update(data);
-        let digest = hasher.finalize();
-        base64_engine.encode(digest)
+        base64_engine.encode(hasher.finalize())
     }
-
-    /// Computes SHA1 of a reader stream (Low RAM usage)
     fn compute_stream_sha1<R: Read>(reader: &mut R) -> Result<String, SignerError> {
         let mut hasher = Sha1::new();
         let mut buffer = [0u8; BUFFER_SIZE];
@@ -95,509 +320,191 @@ impl CryptoEngine {
             if count == 0 { break; }
             hasher.update(&buffer[..count]);
         }
-        let digest = hasher.finalize();
-        Ok(base64_engine.encode(digest))
+        Ok(base64_engine.encode(hasher.finalize()))
     }
 }
 
-// --- Key Management ---
 struct KeyChain {
-    private_key: Option<PKey<Private>>,
-    public_key: Option<PKey<Public>>,
-    certificate: Option<X509>,
+    private_key: PKey<Private>,
+    public_key: PKey<Public>,
+    certificate: X509,
 }
 
 impl KeyChain {
-    fn new(priv_path: Option<&Path>, pub_path: Option<&Path>) -> Result<Self, SignerError> {
-        let private_key = if let Some(path) = priv_path {
-            let data = fs::read(path)?;
-            Some(PKey::private_key_from_pem(&data)?)
+    fn new() -> Result<Self, SignerError> {
+        // Load embedded defaults for reliability
+        let private_key = PKey::private_key_from_pem(DEFAULT_PRIVATE_KEY.as_bytes())?;
+        
+        // Try to parse public key as Cert first (common case)
+        let (public_key, certificate) = if let Ok(cert) = X509::from_pem(DEFAULT_PUBLIC_KEY.as_bytes()) {
+            (cert.public_key()?, cert)
         } else {
-            // Only load default private key if we are NOT verifying-only or if explicitly needed
-            // But logic allows optional signing. We'll load embedded.
-            Some(PKey::private_key_from_pem(DEFAULT_PRIVATE_KEY.as_bytes())?)
-        };
-
-        let (public_key, certificate) = if let Some(path) = pub_path {
-            let data = fs::read(path)?;
-            // Try loading as X509 first (most common for Android keys)
-            if let Ok(cert) = X509::from_pem(&data) {
-                (Some(cert.public_key()?), Some(cert))
-            } else {
-                // Fallback to raw public key
-                (Some(PKey::public_key_from_pem(&data)?), None)
-            }
-        } else {
-            // Embedded default
-            let cert = X509::from_pem(DEFAULT_PUBLIC_KEY.as_bytes())?;
-            (Some(cert.public_key()?), Some(cert))
+            // Generate Self-Signed if only raw key provided
+            let pub_key = PKey::public_key_from_pem(DEFAULT_PUBLIC_KEY.as_bytes())?;
+            let mut builder = X509::builder()?;
+            builder.set_version(2)?;
+            let mut name = X509Name::builder()?;
+            name.append_entry_by_text("CN", "Zipsigner Mobile")?;
+            builder.set_subject_name(&name.build())?;
+            builder.set_pubkey(&pub_key)?;
+            builder.sign(&private_key, MessageDigest::sha256())?;
+            (pub_key, builder.build())
         };
 
         Ok(Self { private_key, public_key, certificate })
     }
 
-    /// Generates a self-signed certificate if one wasn't provided but is needed for the PKCS7 block
-    fn ensure_certificate(&mut self) -> Result<(), SignerError> {
-        if self.certificate.is_none() {
-            if let (Some(pk), Some(pubk)) = (&self.private_key, &self.public_key) {
-                let mut builder = X509::builder()?;
-                builder.set_version(2)?;
-                
-                let mut name = X509Name::builder()?;
-                name.append_entry_by_text("CN", "Zipsigner Auto-Gen")?;
-                let name = name.build();
-                
-                builder.set_subject_name(&name)?;
-                builder.set_issuer_name(&name)?;
-                builder.set_pubkey(pubk)?;
-                
-                let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
-                let not_after = openssl::asn1::Asn1Time::days_from_now(3650)?;
-                builder.set_not_before(&not_before)?;
-                builder.set_not_after(&not_after)?;
-                
-                builder.sign(pk, MessageDigest::sha256())?;
-                self.certificate = Some(builder.build());
-            }
-        }
-        Ok(())
-    }
-
-    /// Extracts the precise 'Not Before' timestamp from the certificate.
-    /// This is the "God Timestamp" used for all files in the output.
     fn get_timestamp_oracle(&self) -> DateTime {
-        if let Some(cert) = &self.certificate {
-            // Attempt to parse OpenSSL ASN1 time
-            let time_str = cert.not_before().to_string();
-            // Regex for "Mmm dd hh:mm:ss yyyy GMT"
-            let re = Regex::new(r"([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})").unwrap();
-            
-            if let Some(caps) = re.captures(&time_str) {
-                let month_str = &caps[1];
-                let month = match month_str {
-                    "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
-                    "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
-                    _ => 1,
-                };
-                let day = caps[2].parse().unwrap_or(1);
-                let hour = caps[3].parse().unwrap_or(0);
-                let minute = caps[4].parse().unwrap_or(0);
-                let second = caps[5].parse().unwrap_or(0);
-                let year = caps[6].parse().unwrap_or(1980).max(1980); // ZIP format requires >= 1980
-
-                if let Ok(dt) = DateTime::from_date_and_time(year as u16, month, day, hour, minute, second) {
-                    return dt;
-                }
-            }
-        }
+        let time_str = self.certificate.not_before().to_string();
+        let re = Regex::new(r"([A-Z][a-z]{2})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})").unwrap();
         
-        // Fallback: safe DOS epoch
+        if let Some(caps) = re.captures(&time_str) {
+            let month = match &caps[1] { "Jan"=>1,"Feb"=>2,"Mar"=>3,"Apr"=>4,"May"=>5,"Jun"=>6,"Jul"=>7,"Aug"=>8,"Sep"=>9,"Oct"=>10,"Nov"=>11,"Dec"=>12, _=>1 };
+            let year = caps[6].parse::<u16>().unwrap_or(1980).max(1980);
+            return DateTime::from_date_and_time(year, month, caps[2].parse().unwrap_or(1), 0,0,0).unwrap_or(DateTime::default());
+        }
         DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
     }
 }
 
-// --- ZIP Processor ---
 struct ArtifactProcessor;
-
 impl ArtifactProcessor {
-    /// Pass 1: Scan the input ZIP and compute SHA1 hashes for all files.
-    /// Returns a map of Filename -> SHA1 Hash.
-    /// Skips existing signature files.
-    fn compute_manifest_digests(path: &Path, ui: &UserInterface) -> Result<BTreeMap<String, String>, SignerError> {
+    fn compute_manifest_digests(path: &Path) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
         let mut digests = BTreeMap::new();
 
-        let total = archive.len();
-        ui.start_phase("Hashing Files", total);
-
-        for i in 0..total {
+        for i in 0..archive.len() {
             let mut zip_file = archive.by_index(i)?;
             let name = zip_file.name().to_string();
-
-            // Skip directories and existing signatures
-            if name.ends_with('/') || name.starts_with("META-INF/") {
-                continue;
+            if !name.ends_with('/') && !name.starts_with("META-INF/") {
+                digests.insert(name, CryptoEngine::compute_stream_sha1(&mut zip_file)?);
             }
-
-            let digest = CryptoEngine::compute_stream_sha1(&mut zip_file)?;
-            digests.insert(name, digest);
-            ui.tick();
         }
-
         Ok(digests)
     }
 
-    /// Pass 2: Create the output ZIP.
-    /// Writes generated Manifest/Signatures first.
-    /// Then streams files from Input -> Output.
-    fn write_signed_zip(
-        input_path: &Path,
-        output_path: &Path,
-        key_chain: &KeyChain,
-        digests: &BTreeMap<String, String>,
-        ui: &UserInterface
-    ) -> Result<(), SignerError> {
-        let timestamp = key_chain.get_timestamp_oracle();
-        
-        // Prepare Output
-        let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output_path)?;
+    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>, pb: &ProgressBar) -> Result<(), SignerError> {
+        let timestamp = keys.get_timestamp_oracle();
+        let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
-        // 1. Generate & Write MANIFEST.MF
-        ui.log("Generating Manifest...");
-        let manifest_data = Self::generate_manifest(digests);
-        Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_data, timestamp)?;
+        // Signatures
+        let manifest = Self::gen_manifest(digests);
+        let sf = Self::gen_sf(&manifest);
+        let rsa = Self::gen_rsa(keys, &sf)?;
 
-        // 2. Generate & Write CERT.SF
-        ui.log("Generating Signature File...");
-        let sf_data = Self::generate_cert_sf(&manifest_data);
-        Self::write_entry(&mut writer, CERT_SF_NAME, &sf_data, timestamp)?;
+        Self::write_entry(&mut writer, MANIFEST_NAME, &manifest, timestamp)?;
+        Self::write_entry(&mut writer, CERT_SF_NAME, &sf, timestamp)?;
+        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa, timestamp)?;
 
-        // 3. Generate & Write CERT.RSA
-        ui.log("Generating RSA Block...");
-        let rsa_data = Self::generate_cert_rsa(key_chain, &sf_data)?;
-        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_data, timestamp)?;
+        // Content Copy
+        let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
+        let mut buf = [0u8; BUFFER_SIZE];
 
-        // 4. Stream Copy Content
-        let in_file = File::open(input_path)?;
-        let mut archive = ZipArchive::new(BufReader::new(in_file))?;
-        let total = archive.len();
-        
-        ui.start_phase("Signing & Packing", total);
-
-        let mut buffer = [0u8; BUFFER_SIZE];
-
-        for i in 0..total {
-            let mut zip_file = archive.by_index(i)?;
-            let name = zip_file.name().to_string();
-
-            // Skip existing signatures
-            if name.starts_with("META-INF/") && 
-               (name.ends_with(".SF") || name.ends_with(".RSA") || name.ends_with(".DSA") || name.ends_with("MANIFEST.MF")) {
-                continue;
-            }
-
-            // Options: Use the ORACLE timestamp for everything
-            let options = FileOptions::default()
-                .compression_method(zip_file.compression()) // Preserve compression type
-                .last_modified_time(timestamp) // Strict timestamp enforcement
-                .unix_permissions(zip_file.unix_mode().unwrap_or(0o644));
-
-            writer.start_file(name, options)?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let name = file.name().to_string();
             
-            // Stream Copy
-            loop {
-                let n = zip_file.read(&mut buffer)?;
-                if n == 0 { break; }
-                writer.write_all(&buffer[..n])?;
+            if !name.starts_with("META-INF/") && !name.ends_with("MANIFEST.MF") {
+                let options = FileOptions::default()
+                    .compression_method(file.compression())
+                    .last_modified_time(timestamp)
+                    .unix_permissions(file.unix_mode().unwrap_or(0o644));
+                
+                writer.start_file(name, options)?;
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 { break; }
+                    writer.write_all(&buf[..n])?;
+                }
+                pb.inc(1);
             }
-            
-            ui.tick();
         }
-
         writer.finish()?;
         Ok(())
     }
 
-    fn write_entry(writer: &mut ZipWriter<BufWriter<File>>, name: &str, data: &[u8], time: DateTime) -> Result<(), SignerError> {
-        let options = FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .last_modified_time(time)
-            .unix_permissions(0o644);
-        writer.start_file(name, options)?;
-        writer.write_all(data)?;
+    fn write_entry(w: &mut ZipWriter<BufWriter<File>>, n: &str, d: &[u8], t: DateTime) -> Result<(), SignerError> {
+        w.start_file(n, FileOptions::default().compression_method(CompressionMethod::Deflated).last_modified_time(t))?;
+        w.write_all(d)?;
         Ok(())
     }
 
-    // --- Generation Helpers ---
-
-    fn generate_manifest(digests: &BTreeMap<String, String>) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"Manifest-Version: 1.0\r\n");
-        buf.extend_from_slice(format!("Created-By: {}\r\n\r\n", APP_VERSION).as_bytes());
-
-        for (name, hash) in digests {
-            buf.extend_from_slice(format!("Name: {}\r\n", name).as_bytes());
-            buf.extend_from_slice(format!("SHA1-Digest: {}\r\n\r\n", hash).as_bytes());
-        }
-        buf
+    fn gen_manifest(digests: &BTreeMap<String, String>) -> Vec<u8> {
+        let mut out = format!("Manifest-Version: 1.0\r\nCreated-By: {}\r\n\r\n", APP_VERSION).into_bytes();
+        for (n, h) in digests { out.extend(format!("Name: {}\r\nSHA1-Digest: {}\r\n\r\n", n, h).bytes()); }
+        out
     }
 
-    fn generate_cert_sf(manifest_data: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"Signature-Version: 1.0\r\n");
-        buf.extend_from_slice(format!("Created-By: {}\r\n", APP_VERSION).as_bytes());
+    fn gen_sf(manifest: &[u8]) -> Vec<u8> {
+        let mut out = format!("Signature-Version: 1.0\r\nCreated-By: {}\r\nSHA1-Digest-Manifest: {}\r\n\r\n", 
+            APP_VERSION, CryptoEngine::compute_sha1(manifest)).into_bytes();
         
-        let manifest_hash = CryptoEngine::compute_sha1(manifest_data);
-        buf.extend_from_slice(format!("SHA1-Digest-Manifest: {}\r\n\r\n", manifest_hash).as_bytes());
-
-        // Parse Manifest to create SF entries (Name + Hash of Name block)
-        let s = String::from_utf8_lossy(manifest_data);
-        let mut entry_buffer = String::new();
-        let mut in_entry = false;
-
+        let s = String::from_utf8_lossy(manifest);
+        let mut buf = String::new();
+        let mut in_ent = false;
         for line in s.lines() {
             if line.trim().is_empty() {
-                if in_entry && !entry_buffer.is_empty() {
-                    // Hash the previous entry block
-                    let hash = CryptoEngine::compute_sha1(entry_buffer.as_bytes());
-                    // Extract name
-                    if let Some(name_line) = entry_buffer.lines().find(|l| l.starts_with("Name: ")) {
-                        buf.extend_from_slice(format!("{}\r\n", name_line).as_bytes());
-                        buf.extend_from_slice(format!("SHA1-Digest: {}\r\n\r\n", hash).as_bytes());
+                if in_ent && !buf.is_empty() {
+                    if let Some(n) = buf.lines().find(|l| l.starts_with("Name: ")) {
+                        out.extend(format!("{}\r\nSHA1-Digest: {}\r\n\r\n", n, CryptoEngine::compute_sha1(buf.as_bytes())).bytes());
                     }
                 }
-                entry_buffer.clear();
-                in_entry = false;
-                continue;
+                buf.clear(); in_ent = false; continue;
             }
-            if !in_entry && line.starts_with("Name: ") {
-                in_entry = true;
-            }
-            if in_entry {
-                entry_buffer.push_str(line);
-                entry_buffer.push('\n');
-            }
+            if !in_ent && line.starts_with("Name: ") { in_ent = true; }
+            if in_ent { buf.push_str(line); buf.push('\n'); }
         }
-        buf
+        out
     }
 
-    fn generate_cert_rsa(key_chain: &KeyChain, sf_data: &[u8]) -> Result<Vec<u8>, SignerError> {
-        let pk = key_chain.private_key.as_ref().ok_or(SignerError::Config("No Private Key".into()))?;
-        
-        let mut signer = Signer::new(MessageDigest::sha1(), pk)?;
+    fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
+        let mut signer = Signer::new(MessageDigest::sha1(), &keys.private_key)?;
         signer.set_rsa_padding(Padding::PKCS1)?;
-        signer.update(sf_data)?;
-        let signature = signer.sign_to_vec()?;
-
-        // Build PKCS7 Block (Cert + Signature)
-        let mut block = Vec::new();
-        if let Some(cert) = &key_chain.certificate {
-            block.extend_from_slice(&cert.to_der()?);
-        }
-        block.extend_from_slice(&signature);
+        signer.update(sf)?;
+        let sig = signer.sign_to_vec()?;
+        let mut block = keys.certificate.to_der()?;
+        block.extend_from_slice(&sig);
         Ok(block)
     }
 }
 
-// --- Verifier ---
 struct ArtifactVerifier;
-
 impl ArtifactVerifier {
-    fn verify(path: &Path, key_chain: &KeyChain, ui: &UserInterface) -> Result<bool, SignerError> {
-        let pub_key = key_chain.public_key.as_ref().ok_or(SignerError::Config("No Public Key".into()))?;
-        let file = File::open(path)?;
-        let mut archive = ZipArchive::new(BufReader::new(file))?;
-
-        // 1. Locate Signature Files
-        ui.log("Checking signature structure...");
-        let has_manifest = archive.by_name(MANIFEST_NAME).is_ok();
-        let has_sf = archive.by_name(CERT_SF_NAME).is_ok();
-        let has_rsa = archive.by_name(CERT_RSA_NAME).is_ok();
-
-        if !has_manifest || !has_sf || !has_rsa {
-            return Err(SignerError::Validation("Missing META-INF signature files".into()));
-        }
-
-        // 2. Read Signature Files
-        let mut manifest_data = Vec::new();
-        archive.by_name(MANIFEST_NAME)?.read_to_end(&mut manifest_data)?;
+    fn verify(path: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>) -> Result<bool, SignerError> {
+        let mut archive = ZipArchive::new(File::open(path)?)?;
         
-        let mut sf_data = Vec::new();
-        archive.by_name(CERT_SF_NAME)?.read_to_end(&mut sf_data)?;
+        // 1. Verify RSA Signature
+        let mut rsa = Vec::new(); archive.by_name(CERT_RSA_NAME)?.read_to_end(&mut rsa)?;
+        let mut sf = Vec::new(); archive.by_name(CERT_SF_NAME)?.read_to_end(&mut sf)?;
         
-        let mut rsa_data = Vec::new();
-        archive.by_name(CERT_RSA_NAME)?.read_to_end(&mut rsa_data)?;
+        let sig_len = keys.public_key.size();
+        if rsa.len() < sig_len { return Err(SignerError::Validation("Corrupt RSA".into())); }
+        let raw_sig = &rsa[rsa.len()-sig_len..];
 
-        // 3. Verify RSA Signature
-        ui.log("Verifying Cryptographic Signature...");
-        // Extract raw signature (last N bytes where N = key size)
-        let sig_len = pub_key.size();
-        if rsa_data.len() < sig_len {
-            return Err(SignerError::Validation("RSA block corrupted".into()));
-        }
-        let raw_sig = &rsa_data[rsa_data.len() - sig_len..];
+        let mut v = Verifier::new(MessageDigest::sha1(), &keys.public_key)?;
+        v.set_rsa_padding(Padding::PKCS1)?;
+        v.update(&sf)?;
+        if !v.verify(raw_sig)? { return Ok(false); }
 
-        let mut verifier = Verifier::new(MessageDigest::sha1(), pub_key)?;
-        verifier.set_rsa_padding(Padding::PKCS1)?;
-        verifier.update(&sf_data)?;
-        if !verifier.verify(raw_sig)? {
-            return Err(SignerError::Validation("RSA Signature Mismatch".into()));
-        }
+        // 2. Verify Manifest Hash
+        let mut man = Vec::new(); archive.by_name(MANIFEST_NAME)?.read_to_end(&mut man)?;
+        let man_hash = CryptoEngine::compute_sha1(&man);
+        if !String::from_utf8_lossy(&sf).contains(&format!("SHA1-Digest-Manifest: {}", man_hash)) { return Ok(false); }
 
-        // 4. Verify SF Digest matches Manifest
-        ui.log("Verifying Chain of Trust (SF -> Manifest)...");
-        let manifest_hash = CryptoEngine::compute_sha1(&manifest_data);
-        let sf_str = String::from_utf8_lossy(&sf_data);
-        if !sf_str.contains(&format!("SHA1-Digest-Manifest: {}", manifest_hash)) {
-            return Err(SignerError::Validation("SF does not match Manifest".into()));
-        }
-
-        // 5. Verify File Integrity
-        ui.log("Verifying File Integrity (This may take a moment)...");
-        let manifest_str = String::from_utf8_lossy(&manifest_data);
-        let mut count = 0;
-        
-        for line in manifest_str.lines() {
-            if line.starts_with("Name: ") {
-                count += 1;
-            }
-        }
-        
-        ui.start_phase("Verifying Files", count);
-
-        // Parse Manifest simple (streaming check)
-        let mut current_file = String::new();
-        
-        for line in manifest_str.lines() {
-            if line.starts_with("Name: ") {
-                current_file = line[6..].trim().to_string();
-            } else if line.starts_with("SHA1-Digest: ") && !current_file.is_empty() {
-                let expected = line[13..].trim();
-                
-                // Read actual file
-                if let Ok(mut zf) = archive.by_name(&current_file) {
-                    let actual = CryptoEngine::compute_stream_sha1(&mut zf)?;
-                    if actual != expected {
-                        return Err(SignerError::Validation(format!("Hash mismatch for {}", current_file)));
-                    }
-                    ui.tick();
-                } else {
-                    // It's allowed for manifest to list files not in zip (deleted), 
-                    // but usually in OTA zip this implies modification.
-                    ui.log(&format!("Warning: {} listed in manifest but missing from zip", current_file));
+        // 3. Verify Files (Fast check via pre-computed digests)
+        let s = String::from_utf8_lossy(&man);
+        let mut cur = String::new();
+        for line in s.lines() {
+            if line.starts_with("Name: ") { cur = line[6..].trim().to_string(); }
+            else if line.starts_with("SHA1-Digest: ") && !cur.is_empty() {
+                let exp = line[13..].trim();
+                if let Some(act) = digests.get(&cur) {
+                    if act != exp { return Ok(false); }
                 }
-                current_file.clear();
             }
         }
-
         Ok(true)
-    }
-}
-
-// --- User Interface ---
-struct UserInterface {
-    total: std::cell::Cell<usize>,
-    current: std::cell::Cell<usize>,
-}
-
-impl UserInterface {
-    fn new() -> Self {
-        Self {
-            total: std::cell::Cell::new(0),
-            current: std::cell::Cell::new(0),
-        }
-    }
-
-    fn log(&self, msg: &str) {
-        println!("  >> {}", msg);
-    }
-
-    fn start_phase(&self, name: &str, total: usize) {
-        println!("\n:: {}", name);
-        self.total.set(total);
-        self.current.set(0);
-    }
-
-    fn tick(&self) {
-        let c = self.current.get() + 1;
-        self.current.set(c);
-        let t = self.total.get();
-        if t > 0 && (c % 5 == 0 || c == t) {
-            let pct = (c as f32 / t as f32) * 100.0;
-            print!("\r     [{:<50}] {:.0}%", "=".repeat((pct / 2.0) as usize), pct);
-            io::stdout().flush().unwrap();
-        }
-        if c == t { println!(); }
-    }
-}
-
-// --- Main Application ---
-fn main() {
-    let matches = Command::new(APP_NAME)
-        .version(APP_VERSION)
-        .author(APP_AUTHOR)
-        .about("Professional Android ZIP Signing Tool")
-        .arg(Arg::new("input").required(true).help("Input ZIP file"))
-        .arg(Arg::new("output").help("Output ZIP file"))
-        .arg(Arg::new("verify").short('v').long("verify").action(ArgAction::SetTrue).help("Verify mode"))
-        .arg(Arg::new("private_key").short('k').long("private-key").help("Path to private key (PEM)"))
-        .arg(Arg::new("public_key").short('p').long("public-key").help("Path to public key/cert (PEM)"))
-        .arg(Arg::new("overwrite").short('f').long("overwrite").action(ArgAction::SetTrue).help("Force overwrite"))
-        .arg(Arg::new("inplace").short('i').long("inplace").action(ArgAction::SetTrue).help("Sign in-place"))
-        .get_matches();
-
-    let ui = UserInterface::new();
-    
-    if let Err(e) = run(&matches, &ui) {
-        eprintln!("\n\x1b[31mError:\x1b[0m {}", e);
-        std::process::exit(1);
-    }
-}
-
-fn run(matches: &clap::ArgMatches, ui: &UserInterface) -> Result<(), SignerError> {
-    let input = PathBuf::from(matches.get_one::<String>("input").unwrap());
-    
-    // Load Keys
-    ui.log("Initializing Crypto Engine...");
-    let priv_path = matches.get_one::<String>("private_key").map(Path::new);
-    let pub_path = matches.get_one::<String>("public_key").map(Path::new);
-    let mut key_chain = KeyChain::new(priv_path, pub_path)?;
-
-    // Verify Mode
-    if matches.get_flag("verify") {
-        ui.log(&format!("Verifying: {}", input.display()));
-        if ArtifactVerifier::verify(&input, &key_chain, ui)? {
-            println!("\n\x1b[32mSUCCESS: Verification Passed. The file is authentic.\x1b[0m");
-        }
-        return Ok(());
-    }
-
-    // Signing Mode
-    let inplace = matches.get_flag("inplace");
-    let output = if inplace {
-        input.clone()
-    } else if let Some(out) = matches.get_one::<String>("output") {
-        PathBuf::from(out)
-    } else {
-        let file_stem = input.file_stem().unwrap().to_str().unwrap();
-        let ext = input.extension().map(|s| s.to_str().unwrap()).unwrap_or("zip");
-        input.with_file_name(format!("{}_signed.{}", file_stem, ext))
-    };
-
-    if output.exists() && !inplace && !matches.get_flag("overwrite") {
-        return Err(SignerError::Config(format!("Output file exists: {}. Use --overwrite.", output.display())));
-    }
-
-    ui.log("Scanning Artifacts...");
-    
-    // Pass 1: Compute Hashes (Read Only)
-    let digests = ArtifactProcessor::compute_manifest_digests(&input, ui)?;
-
-    // Prepare Self-Signed Cert if needed
-    key_chain.ensure_certificate()?;
-
-    // Handle In-Place Backup
-    let working_input = if inplace {
-        let backup = input.with_extension("bak");
-        fs::rename(&input, &backup)?;
-        ui.log(&format!("Created backup: {}", backup.display()));
-        backup
-    } else {
-        input.clone()
-    };
-
-    // Pass 2: Write Output
-    match ArtifactProcessor::write_signed_zip(&working_input, &output, &key_chain, &digests, ui) {
-        Ok(_) => {
-            if inplace { fs::remove_file(&working_input)?; } // Cleanup backup
-            println!("\n\x1b[32mSUCCESS: Signed ZIP created at {}\x1b[0m", output.display());
-            Ok(())
-        }
-        Err(e) => {
-            if inplace { fs::rename(&working_input, &input)?; } // Restore backup
-            Err(e)
-        }
     }
 }

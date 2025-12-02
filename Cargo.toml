@@ -1,24 +1,28 @@
 [package]
 name = "zipsignerust"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 authors = ["Tiash H Kabir (@MrCarb0n)"]
-description = "Android flashable ZIP signing and verification tool"
+description = "Aesthetic Android ZIP Signer"
 
 [dependencies]
+# Core Logic
 zip = "0.6.6"
 openssl = { version = "0.10.61", features = ["vendored"] }
-clap = { version = "4.5.4" }
 sha1 = "0.10.1"
 base64 = "0.21.7"
 regex = "1.10.2"
+clap = { version = "4.5.4" }
 
-# --- Production Optimizations (AAA+ Tier) ---
-# These settings significantly reduce the binary size and improve startup time.
-# Essential for mobile/embedded tools to ensure they are lightweight.
+# UI/UX Upgrade
+indicatif = "0.17.8"   # Beautiful Progress Bars & Spinners
+console = "0.15.8"     # Terminal Colors & Controls
+dialoguer = "0.11.0"   # Interactive Menus
+colored = "2.1.0"      # Easy coloring
+
 [profile.release]
-opt-level = "z"      # Optimize for binary size (use "3" for max speed if preferred)
-lto = true           # Enable Link Time Optimization (removes unused code across crates)
-codegen-units = 1    # Maximize optimization at the cost of compile time
-panic = "abort"      # Remove stack unwinding bloat (saves ~300KB+)
-strip = true         # Automatically strip debug symbols (saves ~2MB+)
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
