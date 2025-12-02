@@ -224,8 +224,14 @@ fn load_embedded_private_key() -> Result<PKey<Private>, Box<dyn std::error::Erro
 }
 
 fn load_embedded_public_key() -> Result<PKey<Public>, Box<dyn std::error::Error>> {
-    PKey::public_key_from_pem(DEFAULT_PUBLIC_KEY.as_bytes())
-        .map_err(|e| format!("Failed to load embedded public key: {}", e).into())
+    // Try as public key first
+    if let Ok(key) = PKey::public_key_from_pem(DEFAULT_PUBLIC_KEY.as_bytes()) {
+        return Ok(key);
+    }
+    // Fallback to X509 certificate
+    let cert = X509::from_pem(DEFAULT_PUBLIC_KEY.as_bytes())
+        .map_err(|e| format!("Failed to load embedded public key: {}", e))?;
+    Ok(cert.public_key()?)
 }
 
 fn load_private_key_from_file(path: &Path) -> Result<PKey<Private>, Box<dyn std::error::Error>> {
@@ -236,8 +242,14 @@ fn load_private_key_from_file(path: &Path) -> Result<PKey<Private>, Box<dyn std:
 
 fn load_public_key_from_file(path: &Path) -> Result<PKey<Public>, Box<dyn std::error::Error>> {
     let data = fs::read_to_string(path)?;
-    PKey::public_key_from_pem(data.as_bytes())
-        .map_err(|e| format!("Failed to load public key from {}: {}", path.display(), e).into())
+    // Try as public key first
+    if let Ok(key) = PKey::public_key_from_pem(data.as_bytes()) {
+        return Ok(key);
+    }
+    // Fallback to X509 certificate
+    let cert = X509::from_pem(data.as_bytes())
+        .map_err(|e| format!("Failed to load public key from {}: {}", path.display(), e))?;
+    Ok(cert.public_key()?)
 }
 
 fn create_self_signed_certificate(public_key: &PKey<Public>) -> Result<X509, Box<dyn std::error::Error>> {
