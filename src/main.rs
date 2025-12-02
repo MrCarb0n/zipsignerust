@@ -418,9 +418,16 @@ fn verify_android_zip(
         return Ok(false);
     }
 
+    // New Step: Verify that CERT.SF actually matches MANIFEST.MF
+    progress.report("Verifying CERT.SF digest");
+    let manifest = entries.get(MANIFEST_NAME).unwrap();
+    if !verify_manifest_digest(cert_sf, manifest) {
+        eprintln!("Error: CERT.SF does not match MANIFEST.MF digest");
+        return Ok(false);
+    }
+
     // Verify MANIFEST.MF entries against actual file contents
     progress.report("Verifying file signatures");
-    let manifest = entries.get(MANIFEST_NAME).unwrap();
     let manifest_entries = parse_manifest(manifest)?;
     
     for (name, expected_digest) in manifest_entries {
@@ -445,11 +452,40 @@ fn verify_android_zip(
     Ok(true)
 }
 
+fn verify_manifest_digest(cert_sf: &[u8], manifest: &[u8]) -> bool {
+    let manifest_digest = compute_sha1_digest(manifest);
+    let sf_str = String::from_utf8_lossy(cert_sf);
+    
+    for line in sf_str.lines() {
+        if line.starts_with("SHA1-Digest-Manifest: ") {
+            let stored_digest = line[22..].trim();
+            return stored_digest == manifest_digest;
+        }
+    }
+    
+    // Legacy android format might use a different attribute or section,
+    // but this tool generates SHA1-Digest-Manifest in the main header.
+    false
+}
+
 fn verify_signature(
     public_key: &PKey<Public>,
     data: &[u8],
-    signature: &[u8],
+    signature_blob: &[u8],
 ) -> bool {
+    // CERT.RSA = [Certificate DER] + [RSA Signature]
+    // We need to extract just the RSA Signature.
+    // The RSA signature length matches the public key modulus size.
+    let sig_len = public_key.size();
+    
+    if signature_blob.len() < sig_len {
+        eprintln!("Error: Signature blob shorter than key size");
+        return false;
+    }
+    
+    // Extract raw signature from the end of the blob
+    let raw_signature = &signature_blob[signature_blob.len() - sig_len..];
+
     match Verifier::new(MessageDigest::sha1(), public_key) {
         Ok(mut verifier) => {
             if let Err(e) = verifier.set_rsa_padding(Padding::PKCS1) {
@@ -458,7 +494,7 @@ fn verify_signature(
             }
             
             match verifier.update(data) {
-                Ok(_) => match verifier.verify(signature) {
+                Ok(_) => match verifier.verify(raw_signature) {
                     Ok(valid) => valid,
                     Err(e) => {
                         eprintln!("Error verifying signature: {}", e);
