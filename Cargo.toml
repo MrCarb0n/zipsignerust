@@ -1,7 +1,9 @@
 [package]
 name = "zipsignerust"
-version = "1.1.0"
+version = "1.0.0"
 edition = "2021"
+authors = ["Tiash H Kabir (@MrCarb0n)"]
+description = "Android flashable ZIP signing and verification tool"
 
 [dependencies]
 zip = "0.6.6"
@@ -10,4 +12,3 @@ clap = { version = "4.5.4", features = ["derive"] }
 sha1 = "0.10.1"
 base64 = "0.21.7"
 regex = "1.10.2"
-md5 = "0.7.0"

@@ -365,12 +365,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
-name = "md5"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
-
-[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -733,11 +727,10 @@ dependencies = [
 
 [[package]]
 name = "zipsignerust"
-version = "1.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "clap",
- "md5",
  "openssl",
  "regex",
  "sha1",

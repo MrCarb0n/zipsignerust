@@ -1,76 +1,40 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{BufReader, Read, Seek, Write},
     path::{Path, PathBuf},
-    str::FromStr,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    str,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use clap::{Arg, ArgAction, Command};
 use openssl::{
     hash::MessageDigest,
-    pkcs12::Pkcs12,
-    pkey::{PKey, Private},
+    pkey::{PKey, Private, Public},
     rsa::Padding,
     sign::{Signer, Verifier},
-    ssl::SslMethod,
     x509::{X509, X509Name},
 };
 use sha1::{Digest, Sha1};
 use zip::{
     read::ZipArchive,
     write::{FileOptions, ZipWriter},
-    CompressionMethod, DateTime, ZipArchiveBuilder,
+    CompressionMethod, DateTime,
 };
 
 const MANIFEST_NAME: &str = "META-INF/MANIFEST.MF";
 const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
-const STRIP_PATTERN: &str = r"^META-INF/(.*)\.(SF|RSA|DSA)$";
 
-// Android-compatible signature block templates
-const SIG_BLOCK_TEMPLATE_MEDIA: &[u8] = include_bytes!("templates/media.sbt");
-const SIG_BLOCK_TEMPLATE_PLATFORM: &[u8] = include_bytes!("templates/platform.sbt");
-const SIG_BLOCK_TEMPLATE_SHARED: &[u8] = include_bytes!("templates/shared.sbt");
-const SIG_BLOCK_TEMPLATE_TESTKEY: &[u8] = include_bytes!("templates/testkey.sbt");
+// Default keys embedded from the certs directory
+const DEFAULT_PRIVATE_KEY: &str = include_str!("../certs/private_key.pem");
+const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct KeySet {
-    name: String,
-    private_key: PKey<Private>,
-    certificate: X509,
-    sig_block_template: Vec<u8>,
-}
-
-enum KeyMode {
-    AutoTestKey,
-    AutoNone,
-    Auto,
-    Media,
-    Platform,
-    Shared,
-    TestKey,
-    None,
-    Custom(String),
-}
-
-impl FromStr for KeyMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "auto-testkey" => Ok(KeyMode::AutoTestKey),
-            "auto-none" => Ok(KeyMode::AutoNone),
-            "auto" => Ok(KeyMode::Auto),
-            "media" => Ok(KeyMode::Media),
-            "platform" => Ok(KeyMode::Platform),
-            "shared" => Ok(KeyMode::Shared),
-            "testkey" | "test-key" => Ok(KeyMode::TestKey),
-            "none" => Ok(KeyMode::None),
-            _ => Ok(KeyMode::Custom(s.to_string())),
-        }
-    }
+    private_key: Option<PKey<Private>>,
+    public_key: PKey<Public>,
+    certificate: Option<X509>,
 }
 
 struct ProgressState {
@@ -86,10 +50,6 @@ impl ProgressState {
             current_item: 0,
             canceled: false,
         }
-    }
-
-    fn cancel(&mut self) {
-        self.canceled = true;
     }
 
     fn is_canceled(&self) -> bool {
@@ -116,38 +76,32 @@ impl ProgressState {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let matches = Command::new("zipsigner")
-        .version("1.1")
-        .author("Android Open Source Project")
-        .about("Signs ZIP/APK files in Android-compatible format")
+    let matches = Command::new("zipsignerust")
+        .version("1.0")
+        .author("Tiash H Kabir (@MrCarb0n)")
+        .about("Signs and verifies Android flashable ZIP files with RSA signatures")
         .arg(Arg::new("input")
-            .help("Input ZIP/APK file to sign")
+            .help("Input Android flashable ZIP file to sign or verify")
             .required(true)
             .index(1))
         .arg(Arg::new("output")
-            .help("Output signed ZIP/APK file (optional)")
+            .help("Output signed Android flashable ZIP file (optional)")
             .index(2))
-        .arg(Arg::new("keymode")
+        .arg(Arg::new("verify")
+            .short('v')
+            .long("verify")
+            .action(ArgAction::SetTrue)
+            .help("Verify the signature of the input ZIP file instead of signing"))
+        .arg(Arg::new("private_key")
             .short('k')
-            .long("keymode")
-            .value_name("MODE")
-            .default_value("auto-testkey")
-            .help("Key mode: auto-testkey, auto-none, auto, media, platform, shared, testkey, none"))
-        .arg(Arg::new("keystore")
-            .short('s')
-            .long("keystore")
-            .value_name("FILE")
-            .help("Path to PKCS#12 keystore file"))
-        .arg(Arg::new("keystore_pass")
+            .long("private-key")
+            .value_name("PRIVATE_KEY")
+            .help("Path to private key file (PEM format) [optional for signing]"))
+        .arg(Arg::new("public_key")
             .short('p')
-            .long("keystore-pass")
-            .value_name("PASSWORD")
-            .help("Keystore password"))
-        .arg(Arg::new("key_alias")
-            .short('a')
-            .long("key-alias")
-            .value_name("ALIAS")
-            .help("Key alias in keystore"))
+            .long("public-key")
+            .value_name("PUBLIC_KEY")
+            .help("Path to public key file (PEM format) [optional for verification]"))
         .arg(Arg::new("overwrite")
             .short('f')
             .long("overwrite")
@@ -161,8 +115,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_matches();
 
     let input_path = Path::new(matches.get_one::<String>("input").unwrap());
-    let keymode_str = matches.get_one::<String>("keymode").unwrap();
-    let keymode = KeyMode::from_str(keymode_str)?;
+    let private_key_path = matches.get_one::<String>("private_key").map(Path::new);
+    let public_key_path = matches.get_one::<String>("public_key").map(Path::new);
+    let verify = matches.get_flag("verify");
     let overwrite = matches.get_flag("overwrite");
     let inplace = matches.get_flag("inplace");
 
@@ -174,7 +129,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("'{}' is a directory, not a file", input_path.display()).into());
     }
 
-    // Determine output path
+    // Initialize progress tracking
+    let mut progress = ProgressState::new();
+    progress.report("Loading keys");
+
+    if verify {
+        // Verification mode
+        let public_key = if let Some(pub_path) = public_key_path {
+            progress.report(&format!("Using external public key: {}", pub_path.display()));
+            load_public_key_from_file(pub_path)?
+        } else {
+            progress.report("Using embedded default public key");
+            load_embedded_public_key()?
+        };
+
+        progress.report(&format!("Verifying signatures in: {}", input_path.display()));
+        let result = verify_android_zip(input_path, &public_key, &mut progress)?;
+        
+        if result {
+            progress.report("Verification successful: ZIP file signatures are valid");
+            println!("ZIP file verification passed");
+        } else {
+            progress.report("Verification failed: ZIP file signatures are invalid");
+            println!("ZIP file verification failed");
+            std::process::exit(1);
+        }
+        
+        return Ok(());
+    }
+
+    // Determine output path for signing
     let output_path = if inplace {
         input_path.to_path_buf()
     } else if let Some(out) = matches.get_one::<String>("output") {
@@ -192,33 +176,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    // Initialize progress tracking
-    let mut progress = ProgressState::new();
+    // Load keys for signing
+    let private_key = if let Some(priv_path) = private_key_path {
+        progress.report(&format!("Using external private key: {}", priv_path.display()));
+        Some(load_private_key_from_file(priv_path)?)
+    } else {
+        progress.report("Using embedded default private key");
+        Some(load_embedded_private_key()?)
+    };
 
-    // Load keys based on mode
-    let mut key_set = None;
-    if let Some(keystore_path) = matches.get_one::<String>("keystore") {
-        let keystore_pass = matches
-            .get_one::<String>("keystore_pass")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let key_alias = matches
-            .get_one::<String>("key_alias")
-            .map(|s| s.as_str())
-            .unwrap_or("");
+    let public_key = if let Some(pub_path) = public_key_path {
+        progress.report(&format!("Using external public key: {}", pub_path.display()));
+        load_public_key_from_file(pub_path)?
+    } else {
+        progress.report("Using embedded default public key");
+        load_embedded_public_key()?
+    };
 
-        progress.report("Loading certificate and private key from keystore");
-        key_set = Some(load_keys_from_keystore(
-            Path::new(keystore_path),
-            keystore_pass,
-            key_alias,
-        )?);
-    } else if !matches!(keymode, KeyMode::None) {
-        progress.report("Determining signing key");
-        let archive = ZipArchive::new(File::open(input_path)?)?;
-        let entries = load_zip_entries(&archive)?;
-        key_set = determine_key_set(&keymode, &entries, &mut progress)?;
-    }
+    // Create a self-signed certificate for the public key if needed
+    let certificate = create_self_signed_certificate(&public_key)?;
+
+    let key_set = KeySet {
+        private_key,
+        public_key,
+        certificate: Some(certificate),
+    };
 
     // Handle in-place mode with backup
     if inplace {
@@ -228,162 +210,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Original file backed up to: {}",
             backup_path.display()
         ));
-        sign_zip_file(&backup_path, &output_path, key_set.as_ref(), &mut progress)?;
+        sign_android_zip(&backup_path, &output_path, &key_set, &mut progress)?;
         fs::remove_file(backup_path)?;
     } else {
-        sign_zip_file(input_path, &output_path, key_set.as_ref(), &mut progress)?;
+        sign_android_zip(input_path, &output_path, &key_set, &mut progress)?;
     }
 
-    progress.report(&format!("Signed ZIP created at: {}", output_path.display()));
+    progress.report(&format!("Signed Android flashable ZIP created at: {}", output_path.display()));
     Ok(())
 }
 
-fn determine_key_set(
-    keymode: &KeyMode,
-    entries: &BTreeMap<String, Vec<u8>>,
-    progress: &mut ProgressState,
-) -> Result<Option<KeySet>, Box<dyn std::error::Error>> {
-    if matches!(keymode, KeyMode::None) {
-        return Ok(None);
-    }
-
-    if !keymode.to_string().starts_with("auto") {
-        return Ok(Some(load_builtin_key_set(&keymode.to_string())?));
-    }
-
-    // Auto-detect key from existing signature
-    if let Some((key_name, _)) = auto_detect_key(entries)? {
-        progress.report(&format!("Auto-detected key: {}", key_name));
-        return Ok(Some(load_builtin_key_set(&key_name)?));
-    }
-
-    match keymode {
-        KeyMode::AutoTestKey => {
-            progress.report("Falling back to testkey");
-            Ok(Some(load_builtin_key_set("testkey")?))
-        }
-        KeyMode::AutoNone => {
-            progress.report("No key detected, copying without signing");
-            Ok(None)
-        }
-        _ => Err("Unable to determine signing key automatically".into()),
-    }
+fn load_embedded_private_key() -> Result<PKey<Private>, Box<dyn std::error::Error>> {
+    PKey::private_key_from_pem(DEFAULT_PRIVATE_KEY.as_bytes())
+        .map_err(|e| format!("Failed to load embedded private key: {}", e).into())
 }
 
-fn auto_detect_key(
-    entries: &BTreeMap<String, Vec<u8>>,
-) -> Result<Option<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
-    for (name, data) in entries {
-        if name.starts_with("META-INF/") && name.ends_with(".RSA") && data.len() >= 1458 {
-            // Compute MD5 of first 1458 bytes of signature block
-            let hash = md5::compute(&data[..1458]);
-            let md5_str = format!("{:x}", hash);
-
-            let key_map = [
-                ("aa9852bc5a53272ac8031d49b65e4b0f", "media"),
-                ("e60418c4b638f20d0721e115674ca11f", "platform"),
-                ("3e24e49741b60c215c010dc6048fca7d", "shared"),
-                ("dab2cead827ef5313f28e22b6fa8479f", "testkey"),
-            ];
-
-            if let Some((_, key_name)) = key_map.iter().find(|(hash, _)| *hash == md5_str) {
-                return Ok(Some((key_name.to_string(), data.clone())));
-            }
-        }
-    }
-    Ok(None)
+fn load_embedded_public_key() -> Result<PKey<Public>, Box<dyn std::error::Error>> {
+    PKey::public_key_from_pem(DEFAULT_PUBLIC_KEY.as_bytes())
+        .map_err(|e| format!("Failed to load embedded public key: {}", e).into())
 }
 
-fn load_builtin_key_set(name: &str) -> Result<KeySet, Box<dyn std::error::Error>> {
-    let (private_key_pem, cert_pem, sig_block_template) = match name {
-        "media" => (
-            include_str!("keys/media.pk8"),
-            include_str!("keys/media.x509.pem"),
-            SIG_BLOCK_TEMPLATE_MEDIA.to_vec(),
-        ),
-        "platform" => (
-            include_str!("keys/platform.pk8"),
-            include_str!("keys/platform.x509.pem"),
-            SIG_BLOCK_TEMPLATE_PLATFORM.to_vec(),
-        ),
-        "shared" => (
-            include_str!("keys/shared.pk8"),
-            include_str!("keys/shared.x509.pem"),
-            SIG_BLOCK_TEMPLATE_SHARED.to_vec(),
-        ),
-        "testkey" => (
-            include_str!("keys/testkey.pk8"),
-            include_str!("keys/testkey.x509.pem"),
-            SIG_BLOCK_TEMPLATE_TESTKEY.to_vec(),
-        ),
-        _ => return Err(format!("Unknown built-in key: {}", name).into()),
-    };
-
-    let private_key = PKey::private_key_from_pem(private_key_pem.as_bytes())?;
-    let certificate = X509::from_pem(cert_pem.as_bytes())?;
-
-    Ok(KeySet {
-        name: name.to_string(),
-        private_key,
-        certificate,
-        sig_block_template,
-    })
+fn load_private_key_from_file(path: &Path) -> Result<PKey<Private>, Box<dyn std::error::Error>> {
+    let data = fs::read_to_string(path)?;
+    PKey::private_key_from_pem(data.as_bytes())
+        .map_err(|e| format!("Failed to load private key from {}: {}", path.display(), e).into())
 }
 
-fn load_keys_from_keystore(
-    path: &Path,
-    password: &str,
-    alias: &str,
-) -> Result<KeySet, Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let mut buffer = Vec::new();
-    io::Read::read_to_end(&file, &mut buffer)?;
-
-    let pkcs12 = Pkcs12::from_der(&buffer)?;
-    let parsed = pkcs12.parse(password)?;
-
-    // Find the certificate with matching alias or use the first one
-    let certificate = if !alias.is_empty() {
-        parsed
-            .cert
-            .iter()
-            .find(|cert| {
-                cert.subject_name().entries().any(|entry| {
-                    let data = entry.data().as_utf8().unwrap_or_default();
-                    data.contains(alias)
-                })
-            })
-            .cloned()
-            .ok_or_else(|| format!("Certificate with alias '{}' not found", alias))?
-    } else {
-        parsed
-            .cert
-            .first()
-            .cloned()
-            .ok_or("No certificates found in keystore")?
-    };
-
-    // For simplicity, we'll use a standard signature block template
-    let sig_block_template = SIG_BLOCK_TEMPLATE_TESTKEY.to_vec();
-
-    Ok(KeySet {
-        name: "custom".to_string(),
-        private_key: parsed.pkey,
-        certificate,
-        sig_block_template,
-    })
+fn load_public_key_from_file(path: &Path) -> Result<PKey<Public>, Box<dyn std::error::Error>> {
+    let data = fs::read_to_string(path)?;
+    PKey::public_key_from_pem(data.as_bytes())
+        .map_err(|e| format!("Failed to load public key from {}: {}", path.display(), e).into())
 }
 
-fn sign_zip_file(
+fn create_self_signed_certificate(public_key: &PKey<Public>) -> Result<X509, Box<dyn std::error::Error>> {
+    let mut name = X509Name::builder()?;
+    name.append_entry_by_text("C", "US")?;
+    name.append_entry_by_text("ST", "State")?;
+    name.append_entry_by_text("L", "City")?;
+    name.append_entry_by_text("O", "Organization")?;
+    name.append_entry_by_text("OU", "zipsignerust")?;
+    name.append_entry_by_text("CN", "Tiash H Kabir (@MrCarb0n)")?;
+    let name = name.build();
+
+    let mut builder = X509::builder()?;
+    builder.set_version(2)?; // Version 3 (0-indexed)
+    builder.set_subject_name(&name)?;
+    builder.set_issuer_name(&name)?;
+    builder.set_pubkey(public_key)?;
+    
+    // Set validity period: 10 years from now
+    let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
+    let not_after = openssl::asn1::Asn1Time::days_from_now(3650)?;
+    builder.set_not_before(&not_before)?;
+    builder.set_not_after(&not_after)?;
+    
+    // Sign the certificate with the private key (self-signed)
+    let private_key = load_embedded_private_key()?;
+    builder.sign(&private_key, MessageDigest::sha256())?;
+    
+    Ok(builder.build())
+}
+
+fn sign_android_zip(
     input_path: &Path,
     output_path: &Path,
-    key_set: Option<&KeySet>,
+    key_set: &KeySet,
     progress: &mut ProgressState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Open input ZIP archive
     let input_file = File::open(input_path)?;
-    let mut archive = ZipArchive::new(io::BufReader::new(input_file))?;
-    let entries = load_zip_entries(&archive)?;
+    let mut archive = ZipArchive::new(BufReader::new(input_file))?;
+    let entries = load_zip_entries(&mut archive)?;
 
     // Create output ZIP file
     let output_file = OpenOptions::new()
@@ -393,34 +290,12 @@ fn sign_zip_file(
         .open(output_path)?;
     let mut zip_writer = ZipWriter::new(output_file);
 
-    // If no key set, just copy all files
-    if key_set.is_none() {
-        progress.set_total(entries.len());
-        for (name, data) in &entries {
-            if progress.is_canceled() {
-                return Err("Operation canceled".into());
-            }
-
-            progress.report(&format!("Copying: {}", name));
-            let options = FileOptions::default()
-                .compression_method(CompressionMethod::Deflated)
-                .unix_permissions(0o644);
-
-            zip_writer.start_file(name, options)?;
-            zip_writer.write_all(data)?;
-            progress.update(1);
-        }
-        zip_writer.finish()?;
-        return Ok(());
-    }
-
-    let key_set = key_set.unwrap();
-    let timestamp = get_cert_timestamp(key_set)?;
+    let timestamp = get_current_timestamp()?;
 
     // Calculate total progress items
     let mut progress_items = 0;
     for name in entries.keys() {
-        if should_sign_file(name) {
+        if !name.starts_with("META-INF/") && !name.ends_with('/') {
             progress_items += 3; // MANIFEST entry, SF entry, copy file
         }
     }
@@ -475,23 +350,22 @@ fn sign_zip_file(
             return Err("Operation canceled".into());
         }
 
-        if name == MANIFEST_NAME || name == CERT_SF_NAME || name == CERT_RSA_NAME {
-            continue;
-        }
-
-        if regex::Regex::new(STRIP_PATTERN)?.is_match(name) {
+        // Skip existing signature files and directories
+        if name.starts_with("META-INF/") && 
+           (name.ends_with(".SF") || name.ends_with(".RSA") || name.ends_with(".DSA") || name.ends_with(".PK7")) {
             continue;
         }
 
         progress.report(&format!("Copying: {}", name));
         let options = FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
+            .compression_method(if !data.is_empty() { CompressionMethod::Deflated } else { CompressionMethod::Stored })
             .last_modified_time(timestamp)
-            .unix_permissions(0o644);
+            .unix_permissions(0o755); // Android flashable ZIPs typically use 755 permissions
 
         zip_writer.start_file(name, options)?;
         zip_writer.write_all(data)?;
-        if should_sign_file(name) {
+        
+        if !name.starts_with("META-INF/") && !name.ends_with('/') {
             progress.update(1);
         }
     }
@@ -500,8 +374,136 @@ fn sign_zip_file(
     Ok(())
 }
 
+fn verify_android_zip(
+    input_path: &Path,
+    public_key: &PKey<Public>,
+    progress: &mut ProgressState,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    // Open input ZIP archive
+    let input_file = File::open(input_path)?;
+    let mut archive = ZipArchive::new(BufReader::new(input_file))?;
+    let entries = load_zip_entries(&mut archive)?;
+
+    // Check if signature files exist
+    if !entries.contains_key(MANIFEST_NAME) {
+        eprintln!("Error: {} not found in ZIP file", MANIFEST_NAME);
+        return Ok(false);
+    }
+    if !entries.contains_key(CERT_SF_NAME) {
+        eprintln!("Error: {} not found in ZIP file", CERT_SF_NAME);
+        return Ok(false);
+    }
+    if !entries.contains_key(CERT_RSA_NAME) {
+        eprintln!("Error: {} not found in ZIP file", CERT_RSA_NAME);
+        return Ok(false);
+    }
+
+    // Verify CERT.RSA signature against CERT.SF
+    progress.report("Verifying CERT.RSA signature");
+    let cert_sf = entries.get(CERT_SF_NAME).unwrap();
+    let cert_rsa = entries.get(CERT_RSA_NAME).unwrap();
+    
+    if !verify_signature(public_key, cert_sf, cert_rsa) {
+        eprintln!("Error: CERT.RSA signature verification failed");
+        return Ok(false);
+    }
+
+    // Verify MANIFEST.MF entries against actual file contents
+    progress.report("Verifying file signatures");
+    let manifest = entries.get(MANIFEST_NAME).unwrap();
+    let manifest_entries = parse_manifest(manifest)?;
+    
+    for (name, expected_digest) in manifest_entries {
+        if name == "META-INF/MANIFEST.MF" || name.starts_with("META-INF/") {
+            continue;
+        }
+        
+        if let Some(file_data) = entries.get(&name) {
+            let actual_digest = compute_sha1_digest(file_data);
+            if actual_digest != expected_digest {
+                eprintln!("Error: File '{}' has invalid digest", name);
+                eprintln!("Expected: {}", expected_digest);
+                eprintln!("Actual:   {}", actual_digest);
+                return Ok(false);
+            }
+        } else {
+            eprintln!("Error: File '{}' not found in ZIP but listed in manifest", name);
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn verify_signature(
+    public_key: &PKey<Public>,
+     &[u8],
+    signature: &[u8],
+) -> bool {
+    match Verifier::new(MessageDigest::sha1(), public_key) {
+        Ok(mut verifier) => {
+            if let Err(e) = verifier.set_rsa_padding(Padding::PKCS1) {
+                eprintln!("Error setting RSA padding: {}", e);
+                return false;
+            }
+            
+            match verifier.update(data) {
+                Ok(_) => match verifier.verify(signature) {
+                    Ok(valid) => valid,
+                    Err(e) => {
+                        eprintln!("Error verifying signature: {}", e);
+                        false
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error updating verifier: {}", e);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error creating verifier: {}", e);
+            false
+        }
+    }
+}
+
+fn parse_manifest(manifest: &[u8]) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let manifest_str = String::from_utf8_lossy(manifest);
+    let mut entries = BTreeMap::new();
+    let mut current_name = None;
+    let mut current_digest = None;
+
+    for line in manifest_str.lines() {
+        if line.starts_with("Name: ") {
+            current_name = Some(line[6..].trim().to_string());
+        } else if line.starts_with("SHA1-Digest: ") {
+            current_digest = Some(line[13..].trim().to_string());
+        } else if line.is_empty() && current_name.is_some() && current_digest.is_some() {
+            entries.insert(
+                current_name.take().unwrap(),
+                current_digest.take().unwrap(),
+            );
+        }
+    }
+
+    // Handle the last entry if there's no trailing empty line
+    if let (Some(name), Some(digest)) = (current_name, current_digest) {
+        entries.insert(name, digest);
+    }
+
+    Ok(entries)
+}
+
+fn compute_sha1_digest( &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    base64_engine.encode(&digest)
+}
+
 fn load_zip_entries<R: Read + Seek>(
-    archive: &ZipArchive<R>,
+    archive: &mut ZipArchive<R>,
 ) -> Result<BTreeMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
     let mut entries = BTreeMap::new();
 
@@ -516,49 +518,21 @@ fn load_zip_entries<R: Read + Seek>(
     Ok(entries)
 }
 
-fn should_sign_file(name: &str) -> bool {
-    let stripped_name = name.trim_start_matches('/').to_lowercase();
-    let ext = Path::new(&stripped_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-
-    // Skip signing for certain file types
-    if matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "ttf" | "otf") {
-        return false;
-    }
-
-    // Skip directories and signature files
-    if stripped_name.ends_with('/')
-        || stripped_name == MANIFEST_NAME
-        || stripped_name == CERT_SF_NAME
-        || stripped_name == CERT_RSA_NAME
-        || regex::Regex::new(STRIP_PATTERN).unwrap().is_match(&stripped_name)
-    {
-        return false;
-    }
-
-    true
-}
-
 fn generate_manifest(entries: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut manifest = Vec::new();
     manifest.extend_from_slice(b"Manifest-Version: 1.0\r\n");
-    manifest.extend_from_slice(b"Created-By: 1.0 (Android SignApk)\r\n\r\n");
+    manifest.extend_from_slice(b"Created-By: 1.0 (zipsignerust)\r\n\r\n");
 
     for (name, data) in entries {
-        if !should_sign_file(name) {
+        // Skip META-INF files and directories
+        if name.starts_with("META-INF/") || name.ends_with('/') {
             continue;
         }
 
-        let mut hasher = Sha1::new();
-        hasher.update(data);
-        let digest = hasher.finalize();
-        let digest_base64 = base64_engine.encode(&digest);
-
+        let digest = compute_sha1_digest(data);
         manifest.extend_from_slice(format!("Name: {}\r\n", name).as_bytes());
         manifest.extend_from_slice(
-            format!("SHA1-Digest: {}\r\n\r\n", digest_base64).as_bytes(),
+            format!("SHA1-Digest: {}\r\n\r\n", digest).as_bytes(),
         );
     }
 
@@ -568,14 +542,11 @@ fn generate_manifest(entries: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Box
 fn generate_cert_sf(manifest: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut cert_sf = Vec::new();
     cert_sf.extend_from_slice(b"Signature-Version: 1.0\r\n");
-    cert_sf.extend_from_slice(b"Created-By: 1.0 (Android SignApk)\r\n");
+    cert_sf.extend_from_slice(b"Created-By: 1.0 (zipsignerust)\r\n");
 
     // Calculate digest of entire manifest
-    let mut hasher = Sha1::new();
-    hasher.update(manifest);
-    let digest = hasher.finalize();
-    let digest_base64 = base64_engine.encode(&digest);
-    cert_sf.extend_from_slice(format!("\r\nSHA1-Digest-Manifest: {}\r\n\r\n", digest_base64).as_bytes());
+    let digest = compute_sha1_digest(manifest);
+    cert_sf.extend_from_slice(format!("\r\nSHA1-Digest-Manifest: {}\r\n\r\n", digest).as_bytes());
 
     // Parse manifest entries and calculate digests for each
     let manifest_str = String::from_utf8_lossy(manifest);
@@ -585,17 +556,14 @@ fn generate_cert_sf(manifest: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Erro
     for line in manifest_str.lines() {
         if line.is_empty() {
             if !current_entry.is_empty() && in_attributes {
-                let mut hasher = Sha1::new();
-                hasher.update(current_entry.as_bytes());
-                let digest = hasher.finalize();
-                let digest_base64 = base64_engine.encode(&digest);
+                let digest = compute_sha1_digest(current_entry.as_bytes());
                 
                 // Extract the name from the entry
                 if let Some(name_line) = current_entry.lines().next() {
                     if name_line.starts_with("Name: ") {
                         let name = &name_line[6..];
                         cert_sf.extend_from_slice(format!("Name: {}\r\n", name).as_bytes());
-                        cert_sf.extend_from_slice(format!("SHA1-Digest: {}\r\n\r\n", digest_base64).as_bytes());
+                        cert_sf.extend_from_slice(format!("SHA1-Digest: {}\r\n\r\n", digest).as_bytes());
                     }
                 }
             }
@@ -619,60 +587,46 @@ fn generate_cert_sf(manifest: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Erro
 
 fn generate_cert_rsa(key_set: &KeySet, cert_sf: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Sign the CERT.SF file
-    let mut signer = Signer::new(MessageDigest::sha1(), &key_set.private_key)?;
-    signer.set_rsa_padding(Padding::PKCS1)?;
-    signer.update(cert_sf)?;
-    let signature = signer.sign_to_vec()?;
+    if let Some(private_key) = &key_set.private_key {
+        let mut signer = Signer::new(MessageDigest::sha1(), private_key)?;
+        signer.set_rsa_padding(Padding::PKCS1)?;
+        signer.update(cert_sf)?;
+        let signature = signer.sign_to_vec()?;
 
-    // Create signature block using template
-    let mut sig_block = key_set.sig_block_template.clone();
-    
-    // Replace placeholder with actual signature
-    // Note: This is simplified - real implementation would parse the ASN.1 structure
-    // and insert the signature at the correct position
-    if sig_block.len() > 1458 && signature.len() == 128 {
-        sig_block.truncate(1458);
+        // Create PKCS#7 signature block
+        let mut sig_block = Vec::new();
+        
+        // Add certificate
+        if let Some(cert) = &key_set.certificate {
+            let cert_der = cert.to_der()?;
+            sig_block.extend_from_slice(&cert_der);
+        }
+        
+        // Add signature
         sig_block.extend_from_slice(&signature);
+        
+        Ok(sig_block)
     } else {
-        // Fallback to standard signature block generation
-        sig_block = generate_standard_sig_block(key_set, &signature)?;
+        Err("No private key available for signing".into())
     }
-
-    Ok(sig_block)
 }
 
-fn generate_standard_sig_block(
-    key_set: &KeySet,
-    signature: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    // This is a simplified implementation
-    // In a real production system, this would generate a proper PKCS#7 signature block
-    let mut sig_block = Vec::new();
+fn get_current_timestamp() -> Result<DateTime, Box<dyn std::error::Error>> {
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH)?;
+    let secs = duration.as_secs();
     
-    // Add certificate
-    let cert_der = key_set.certificate.to_der()?;
-    sig_block.extend_from_slice(&cert_der);
+    // Convert to date components
+    let year = 1970 + (secs / (365 * 24 * 60 * 60));
+    let day_of_year = (secs % (365 * 24 * 60 * 60)) as u32;
+    let month = 1 + (day_of_year / 30) as u8;
+    let day = 1 + (day_of_year % 30) as u8;
+    let hour = 0;
+    let minute = 0;
+    let second = 0;
     
-    // Add signature
-    sig_block.extend_from_slice(signature);
-    
-    Ok(sig_block)
-}
-
-fn get_cert_timestamp(key_set: &KeySet) -> Result<DateTime, Box<dyn std::error::Error>> {
-    // Use certificate's not-before time + 1 hour
-    let not_before = key_set.certificate.not_before().to_owned();
-    let timestamp = not_before.add(3600)?;
-    
-    // Convert to zip DateTime format
-    let year = timestamp.year() as u16;
-    let month = timestamp.month() as u8;
-    let day = timestamp.day() as u8;
-    let hour = timestamp.hour() as u8;
-    let minute = timestamp.minute() as u8;
-    let second = timestamp.second() as u8;
-    
-    Ok(DateTime::from_date_and_time(year, month, day, hour, minute, second, 0)?)
+    DateTime::from_date_and_time(year as u16, month, day, hour, minute, second)
+        .map_err(|_| "Invalid date/time calculation".into())
 }
 
 fn write_zip_entry(
@@ -683,7 +637,7 @@ fn write_zip_entry(
     progress: &mut ProgressState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let options = FileOptions::default()
-        .compression_method(CompressionMethod::Stored)
+        .compression_method(if !data.is_empty() { CompressionMethod::Deflated } else { CompressionMethod::Stored })
         .last_modified_time(timestamp)
         .unix_permissions(0o644);
 
@@ -732,20 +686,4 @@ fn generate_backup_path(input_path: &Path) -> Result<PathBuf, Box<dyn std::error
     };
 
     Ok(parent.join(backup_name))
-}
-
-impl ToString for KeyMode {
-    fn to_string(&self) -> String {
-        match self {
-            KeyMode::AutoTestKey => "auto-testkey".to_string(),
-            KeyMode::AutoNone => "auto-none".to_string(),
-            KeyMode::Auto => "auto".to_string(),
-            KeyMode::Media => "media".to_string(),
-            KeyMode::Platform => "platform".to_string(),
-            KeyMode::Shared => "shared".to_string(),
-            KeyMode::TestKey => "testkey".to_string(),
-            KeyMode::None => "none".to_string(),
-            KeyMode::Custom(s) => s.clone(),
-        }
-    }
 }
