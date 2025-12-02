@@ -678,7 +678,7 @@ fn get_cert_timestamp(key_set: &KeySet) -> Result<DateTime, Box<dyn std::error::
 fn write_zip_entry(
     zip_writer: &mut ZipWriter<File>,
     name: &str,
-    data: &[u8],
+     &[u8],
     timestamp: DateTime,
     progress: &mut ProgressState,
 ) -> Result<(), Box<dyn std::error::Error>> {
