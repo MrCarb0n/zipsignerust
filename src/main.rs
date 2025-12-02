@@ -435,7 +435,7 @@ fn verify_android_zip(
 
 fn verify_signature(
     public_key: &PKey<Public>,
-     &[u8],
+    data: &[u8],
     signature: &[u8],
 ) -> bool {
     match Verifier::new(MessageDigest::sha1(), public_key) {
