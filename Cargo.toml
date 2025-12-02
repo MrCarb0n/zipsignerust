@@ -1,25 +1,19 @@
 [package]
 name = "zipsignerust"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 authors = ["Tiash H Kabir (@MrCarb0n)"]
-description = "Aesthetic Android ZIP Signer"
+description = "High-performance Android ZIP Signer"
 
 [dependencies]
-# Core Logic
 zip = "0.6.6"
 openssl = { version = "0.10.61", features = ["vendored"] }
+clap = { version = "4.5.4" }
 sha1 = "0.10.1"
 base64 = "0.21.7"
 regex = "1.10.2"
-clap = { version = "4.5.4" }
 
-# UI/UX Upgrade
-indicatif = "0.17.8"   # Beautiful Progress Bars & Spinners
-console = "0.15.8"     # Terminal Colors & Controls
-dialoguer = "0.11.0"   # Interactive Menus
-colored = "2.1.0"      # Easy coloring
-
+# --- Production Optimizations ---
 [profile.release]
 opt-level = "z"
 lto = true
