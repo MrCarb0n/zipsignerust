@@ -33,7 +33,6 @@ const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
 #[derive(Debug, Clone)]
 struct KeySet {
     private_key: Option<PKey<Private>>,
-    public_key: PKey<Public>,
     certificate: Option<X509>,
 }
 
@@ -198,7 +197,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let key_set = KeySet {
         private_key,
-        public_key,
         certificate: Some(certificate),
     };
 
