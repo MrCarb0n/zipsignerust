@@ -493,7 +493,7 @@ fn parse_manifest(manifest: &[u8]) -> Result<BTreeMap<String, String>, Box<dyn s
     Ok(entries)
 }
 
-fn compute_sha1_digest( &[u8]) -> String {
+fn compute_sha1_digest(data: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(data);
     let digest = hasher.finalize();
@@ -630,7 +630,7 @@ fn get_current_timestamp() -> Result<DateTime, Box<dyn std::error::Error>> {
 fn write_zip_entry(
     zip_writer: &mut ZipWriter<File>,
     name: &str,
-     &[u8],
+    data: &[u8], // <--- Added 'data:'
     timestamp: DateTime,
     progress: &mut ProgressState,
 ) -> Result<(), Box<dyn std::error::Error>> {
