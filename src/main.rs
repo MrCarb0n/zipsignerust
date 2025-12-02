@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
     env,
+    fmt,
 };
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use clap::{Arg, ArgAction, Command};
@@ -43,6 +44,8 @@ const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
 const BUFFER_SIZE: usize = 64 * 1024;
 const APP_VERSION: &str = "2.1.0";
+const APP_NAME: &str = "zipsignerust";
+const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
 
 const DEFAULT_PRIVATE_KEY: &str = include_str!("../certs/private_key.pem");
 const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
@@ -213,7 +216,8 @@ fn run_cli_mode() {
         Some(input.with_file_name(format!("{}_signed.zip", stem)))
     };
 
-    run_operation(!verify, &input, output.as_ref());
+    // FIX: Use as_deref() to convert Option<PathBuf> to Option<&Path>
+    run_operation(!verify, &input, output.as_deref());
 }
 
 // --- Core Operation Wrapper ---
@@ -300,10 +304,10 @@ impl fmt::Display for SignerError {
         }
     }
 }
+impl std::error::Error for SignerError {}
 impl From<io::Error> for SignerError { fn from(e: io::Error) -> Self { Self::Io(e) } }
 impl From<zip::result::ZipError> for SignerError { fn from(e: zip::result::ZipError) -> Self { Self::Zip(e) } }
 impl From<openssl::error::ErrorStack> for SignerError { fn from(e: openssl::error::ErrorStack) -> Self { Self::OpenSsl(e) } }
-use std::fmt;
 
 struct CryptoEngine;
 impl CryptoEngine {
