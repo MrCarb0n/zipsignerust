@@ -621,20 +621,60 @@ fn generate_cert_rsa(key_set: &KeySet, cert_sf: &[u8]) -> Result<Vec<u8>, Box<dy
     }
 }
 
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
 fn get_current_timestamp() -> Result<DateTime, Box<dyn std::error::Error>> {
     let now = SystemTime::now();
-    let duration = now.duration_since(UNIX_EPOCH)?;
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0));
     let secs = duration.as_secs();
+
+    // Calculate days since epoch
+    let seconds_per_day = 86400;
+    let mut days_remaining = secs / seconds_per_day;
+    let seconds_remaining = secs % seconds_per_day;
+
+    // Calculate year
+    let mut year = 1970;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days_remaining < days_in_year {
+            break;
+        }
+        days_remaining -= days_in_year;
+        year += 1;
+    }
+
+    // Calculate month and day
+    let days_in_months = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1;
+    for &days in &days_in_months {
+        if days_remaining < days {
+            break;
+        }
+        days_remaining -= days;
+        month += 1;
+    }
     
-    // Convert to date components
-    let year = 1970 + (secs / (365 * 24 * 60 * 60));
-    let day_of_year = (secs % (365 * 24 * 60 * 60)) as u32;
-    let month = 1 + (day_of_year / 30) as u8;
-    let day = 1 + (day_of_year % 30) as u8;
-    let hour = 0;
-    let minute = 0;
-    let second = 0;
+    let day = (days_remaining + 1) as u8;
     
+    // Calculate time
+    let hour = (seconds_remaining / 3600) as u8;
+    let minute = ((seconds_remaining % 3600) / 60) as u8;
+    let second = (seconds_remaining % 60) as u8;
+
+    // Validations for ZIP format (DOS time starts 1980)
+    if year < 1980 {
+        return DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0)
+            .map_err(|_| "Failed to create default timestamp".into());
+    }
+
     DateTime::from_date_and_time(year as u16, month, day, hour, minute, second)
         .map_err(|_| "Invalid date/time calculation".into())
 }
