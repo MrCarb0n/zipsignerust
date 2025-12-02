@@ -206,11 +206,15 @@ impl KeyChain {
             if let (Some(pk), Some(pubk)) = (&self.private_key, &self.public_key) {
                 let mut builder = X509::builder()?;
                 builder.set_version(2)?;
-                let mut name = X509Name::builder()?;
-                name.append_entry_by_text("CN", "Zipsigner Auto-Gen")?;
-                builder.set_subject_name(&name.build())?;
-                builder.set_issuer_name(&name.build())?; // Self-signed
+                
+                let mut name_builder = X509Name::builder()?;
+                name_builder.append_entry_by_text("CN", "Zipsigner Auto-Gen")?;
+                let name = name_builder.build(); // Build once here!
+                
+                builder.set_subject_name(&name)?;
+                builder.set_issuer_name(&name)?; // Reuse the same name object
                 builder.set_pubkey(pubk)?;
+                
                 let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
                 let not_after = openssl::asn1::Asn1Time::days_from_now(3650)?;
                 builder.set_not_before(&not_before)?;
