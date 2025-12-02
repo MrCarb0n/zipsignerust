@@ -630,7 +630,7 @@ fn get_current_timestamp() -> Result<DateTime, Box<dyn std::error::Error>> {
 fn write_zip_entry(
     zip_writer: &mut ZipWriter<File>,
     name: &str,
-    data: &[u8], // <--- Added 'data:'
+    data: &[u8],
     timestamp: DateTime,
     progress: &mut ProgressState,
 ) -> Result<(), Box<dyn std::error::Error>> {
