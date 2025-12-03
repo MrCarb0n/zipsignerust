@@ -1,14 +1,17 @@
-name: High-Speed Build & Release
+name: Build & Release
 
 on:
   push:
     branches: ["main", "master"]
-    tags: ["v*"] # Triggers release on tag push
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,23 +44,26 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Restore Keys
+      - name: Setup Keys
         env:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PUBLIC_KEY: ${{ secrets.PUBLIC_KEY }}
-        if: ${{ env.PRIVATE_KEY != '' }}
         run: |
           mkdir -p certs
-          echo "$PRIVATE_KEY" > certs/private_key.pem
-          echo "$PUBLIC_KEY" > certs/public_key.pem
+          if [[ -n "$PRIVATE_KEY" ]]; then
+            echo "$PRIVATE_KEY" > certs/private_key.pem
+            echo "$PUBLIC_KEY" > certs/public_key.pem
+          else
+            echo "::warning::Secrets not found, generating temporary keys for build..."
+            chmod +x key.sh && ./key.sh
+          fi
 
-      # Build specific target using your script logic
-      - name: Build
+      - name: Build Binary
         run: |
           chmod +x build.sh
           ./build.sh ${{ matrix.target }}
 
-      # Upload the specific binary for this matrix job
+      # Upload raw binary directly (No Zip)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -68,13 +74,9 @@ jobs:
   release:
     name: Publish Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
@@ -83,16 +85,30 @@ jobs:
           pattern: binary-*
           merge-multiple: true
 
+      # Ensures the Linux/Android binaries are executable after download
+      - name: Restore Permissions
+        run: chmod +x all_dist/*
+
       - name: Get Short SHA
         id: slug
         run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
+      # Case 1: Tagged Release
+      - name: Publish Tagged Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          # Name format: "v2.2.0 (a1b2c3d8)"
-          name: "${{ github.ref_name }} (${{ steps.slug.outputs.sha8 }})"
           files: all_dist/*
+          prerelease: true
+          name: "Release ${{ github.ref_name }} (${{ steps.slug.outputs.sha8 }})"
+
+      # Case 2: Commit Push -> Update "Nightly" Release
+      - name: Publish Nightly Release
+        if: startsWith(github.ref, 'refs/tags/') == false
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly
+          name: "Nightly Build (${{ steps.slug.outputs.sha8 }})"
+          files: all_dist/*
+          prerelease: true
           draft: false
-          prerelease: false
-          generate_release_notes: true
