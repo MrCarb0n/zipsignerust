@@ -4,18 +4,15 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     str,
     fmt,
-    time::Duration,
 };
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use clap::{Arg, ArgAction, Command};
-use colored::*;
-use indicatif::{ProgressBar, ProgressStyle};
 use openssl::{
     hash::MessageDigest,
     pkey::{PKey, Private, Public},
@@ -31,10 +28,11 @@ use zip::{
 };
 use regex::Regex;
 
+// --- Constants ---
 const MANIFEST_NAME: &str = "META-INF/MANIFEST.MF";
 const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
-const BUFFER_SIZE: usize = 64 * 1024;
+const BUFFER_SIZE: usize = 64 * 1024; // 64KB Buffer
 const APP_NAME: &str = "zipsignerust";
 const APP_VERSION: &str = "2.2.0";
 const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
@@ -42,6 +40,7 @@ const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
 const DEFAULT_PRIVATE_KEY: &str = include_str!("../certs/private_key.pem");
 const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
 
+// --- Error Handling ---
 #[derive(Debug)]
 enum SignerError {
     Io(io::Error),
@@ -67,6 +66,7 @@ impl From<io::Error> for SignerError { fn from(e: io::Error) -> Self { Self::Io(
 impl From<zip::result::ZipError> for SignerError { fn from(e: zip::result::ZipError) -> Self { Self::Zip(e) } }
 impl From<openssl::error::ErrorStack> for SignerError { fn from(e: openssl::error::ErrorStack) -> Self { Self::OpenSsl(e) } }
 
+// --- Main ---
 fn main() {
     let matches = Command::new(APP_NAME)
         .version(APP_VERSION)
@@ -79,11 +79,10 @@ fn main() {
         .arg(Arg::new("public_key").short('p').long("public-key").help("Path to public key/cert (PEM)"))
         .arg(Arg::new("overwrite").short('f').long("overwrite").action(ArgAction::SetTrue).help("Force overwrite existing output"))
         .arg(Arg::new("inplace").short('i').long("inplace").action(ArgAction::SetTrue).help("Sign in-place (overwrites input)"))
-        .arg(Arg::new("reproducible").short('r').long("reproducible").action(ArgAction::SetTrue).help("Force all files in output to follow certificate creation date for reproducibility"))
         .get_matches();
 
     if let Err(e) = run(&matches) {
-        print_error(&format!("{} {}", "✗".red(), e));
+        eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
@@ -91,31 +90,25 @@ fn main() {
 fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     let input_path = PathBuf::from(matches.get_one::<String>("input").unwrap());
     
-    print_header(&format!("{} v{}", APP_NAME.bright_green().bold(), APP_VERSION.bright_black()));
-    
-    let spinner = create_spinner("Loading keys...");
+    // 1. Load Keys
+    println!(":: Loading keys...");
     let priv_path = matches.get_one::<String>("private_key").map(Path::new);
     let pub_path = matches.get_one::<String>("public_key").map(Path::new);
     let mut key_chain = KeyChain::new(priv_path, pub_path)?;
-    spinner.finish_with_message("Keys loaded successfully.");
 
+    // 2. Verify Mode
     if matches.get_flag("verify") {
-        print_info(&format!("Verifying: {}", input_path.display().to_string().cyan()));
+        println!(":: Verifying: {}", input_path.display());
         if ArtifactVerifier::verify(&input_path, &key_chain)? {
-            print_success("Verification Passed. The file is authentic.");
+            println!("SUCCESS: Verification Passed. The file is authentic.");
         }
         return Ok(());
     }
 
-    // --- Pre-signature check ---
-    if ArtifactProcessor::is_already_signed(&input_path)? {
-        print_warning("Input file is already signed. Skipping signing to create a redundant signature.");
-        return Ok(());
-    }
-
+    // 3. Signing Mode
     let inplace = matches.get_flag("inplace");
     let output_path = if inplace {
-        input_path.with_extension("signed.zip")
+        input_path.clone()
     } else if let Some(out) = matches.get_one::<String>("output") {
         PathBuf::from(out)
     } else {
@@ -127,35 +120,27 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         return Err(SignerError::Config(format!("Output file exists: {}. Use --overwrite.", output_path.display())));
     }
 
-    let spinner = create_spinner("Analyzing artifacts...");
+    // 4. Processing
+    println!(":: Analyzing artifacts...");
     let digests = ArtifactProcessor::compute_manifest_digests(&input_path)?;
-    key_chain.ensure_certificate()?;
-    spinner.finish_with_message("Analysis complete.");
 
+    key_chain.ensure_certificate()?;
+
+    // Handle Backup for In-Place
     let working_input = if inplace {
-        // --- Graceful .bak handling ---
-        let backup_path = input_path.with_extension("bak");
-        let mut final_backup_path = backup_path.clone();
-        let mut backup_suffix = 1;
-        while final_backup_path.exists() {
-            final_backup_path.set_extension(format!("bak{}", backup_suffix));
-            backup_suffix += 1;
-        }
-        if final_backup_path != backup_path {
-            print_warning(&format!("Existing backup found, renaming to {}", final_backup_path.display().to_string().yellow()));
-        }
-        fs::rename(&input_path, &final_backup_path)?;
-        print_success(&format!("Backup created at {}", final_backup_path.display().to_string().green()));
-        final_backup_path
+        let backup = input_path.with_extension("bak");
+        fs::rename(&input_path, &backup)?;
+        println!(":: Backup created: {}", backup.display());
+        backup
     } else {
         input_path.clone()
     };
 
-    print_info("Signing and packing...");
-    let force_reproducible = matches.get_flag("reproducible");
-    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests, force_reproducible) {
+    println!(":: Signing and packing...");
+    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests) {
         Ok(_) => {
-            print_success(&format!("Signed ZIP created at {}", output_path.display().to_string().green()));
+            if inplace { fs::remove_file(&working_input)?; }
+            println!("SUCCESS: Signed ZIP created at {}", output_path.display());
             Ok(())
         }
         Err(e) => {
@@ -165,38 +150,7 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     }
 }
 
-fn print_header(text: &str) {
-    println!("\n{}\n", text);
-}
-
-fn print_success(message: &str) {
-    println!("{} {}", "✓".bright_green().bold(), message.bright_green());
-}
-
-fn print_error(message: &str) {
-    eprintln!("\n{} {}\n", "✗".bright_red().bold(), message.bright_red());
-}
-
-fn print_info(message: &str) {
-    println!("→ {}", message.bright_blue());
-}
-
-fn print_warning(message: &str) {
-    println!("{} {}", "⚠".bright_yellow().bold(), message.bright_yellow());
-}
-
-fn create_spinner(message: &str) -> ProgressBar {
-    let spinner = ProgressBar::new_spinner();
-    spinner.enable_steady_tick(Duration::from_millis(120));
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-            .template("{spinner:.bright.blue} {msg}")
-            .unwrap(),
-    );
-    spinner.set_message(message.to_string());
-    spinner
-}
+// --- Components ---
 
 struct CryptoEngine;
 impl CryptoEngine {
@@ -253,12 +207,13 @@ impl KeyChain {
                 let mut builder = X509::builder()?;
                 builder.set_version(2)?;
                 
+                // FIX: Build name once and reuse it
                 let mut name_builder = X509Name::builder()?;
                 name_builder.append_entry_by_text("CN", "Zipsigner Auto-Gen")?;
                 let name = name_builder.build();
                 
                 builder.set_subject_name(&name)?;
-                builder.set_issuer_name(&name)?;
+                builder.set_issuer_name(&name)?; 
                 builder.set_pubkey(pubk)?;
                 
                 let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
@@ -291,16 +246,6 @@ impl KeyChain {
 
 struct ArtifactProcessor;
 impl ArtifactProcessor {
-    fn is_already_signed(path: &Path) -> Result<bool, SignerError> {
-        let file = File::open(path)?;
-        let archive = ZipArchive::new(BufReader::new(file))?;
-        if archive.by_name(CERT_SF_NAME).is_ok() {
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     fn compute_manifest_digests(path: &Path) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
@@ -316,26 +261,31 @@ impl ArtifactProcessor {
         Ok(digests)
     }
 
-    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>, force_reproducible_timestamps: bool) -> Result<(), SignerError> {
+    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>) -> Result<(), SignerError> {
         let timestamp = keys.get_timestamp_oracle();
         let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
-        let files_to_overwrite: HashSet<&str> = [MANIFEST_NAME, CERT_SF_NAME, CERT_RSA_NAME].iter().cloned().collect();
+        let manifest = Self::gen_manifest(digests);
+        let sf = Self::gen_sf(&manifest);
+        let rsa = Self::gen_rsa(keys, &sf)?;
+
+        Self::write_entry(&mut writer, MANIFEST_NAME, &manifest, timestamp)?;
+        Self::write_entry(&mut writer, CERT_SF_NAME, &sf, timestamp)?;
+        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let mut buf = [0u8; BUFFER_SIZE];
 
-        let spinner = create_spinner("Preserving existing files...");
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let name = file.name().to_string();
             
-            if !files_to_overwrite.contains(name.as_str()) {
+            if !name.starts_with("META-INF/") && !name.ends_with("MANIFEST.MF") && 
+               !name.ends_with(".SF") && !name.ends_with(".RSA") {
                 let options = FileOptions::default()
                     .compression_method(file.compression())
-                    // Use reproducible timestamp if requested, otherwise preserve original
-                    .last_modified_time(if force_reproducible_timestamps { timestamp } else { file.last_modified() })
+                    .last_modified_time(timestamp)
                     .unix_permissions(file.unix_mode().unwrap_or(0o644));
                 
                 writer.start_file(name, options)?;
@@ -346,29 +296,13 @@ impl ArtifactProcessor {
                 }
             }
         }
-        spinner.finish_with_message("Existing files preserved.");
-        
-        let spinner = create_spinner("Adding new signature files...");
-        let manifest = Self::gen_manifest(digests);
-        let sf = Self::gen_sf(&manifest);
-        let rsa = Self::gen_rsa(keys, &sf)?;
-
-        // New signature files always use the certificate timestamp for reproducibility
-        let sig_options = FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .last_modified_time(timestamp);
-
-        writer.start_file(MANIFEST_NAME, sig_options)?;
-        writer.write_all(&manifest)?;
-
-        writer.start_file(CERT_SF_NAME, sig_options)?;
-        writer.write_all(&sf)?;
-
-        writer.start_file(CERT_RSA_NAME, sig_options)?;
-        writer.write_all(&rsa)?;
-        spinner.finish_with_message("Signature files added.");
-        
         writer.finish()?;
+        Ok(())
+    }
+
+    fn write_entry(w: &mut ZipWriter<BufWriter<File>>, n: &str, d: &[u8], t: DateTime) -> Result<(), SignerError> {
+        w.start_file(n, FileOptions::default().compression_method(CompressionMethod::Deflated).last_modified_time(t))?;
+        w.write_all(d)?;
         Ok(())
     }
 
@@ -422,6 +356,7 @@ impl ArtifactVerifier {
         let pub_key = keys.public_key.as_ref().ok_or(SignerError::Config("Public Key Missing".into()))?;
         let mut archive = ZipArchive::new(File::open(path)?)?;
         
+        // 1. Verify RSA Signature
         let mut rsa = Vec::new(); 
         if archive.by_name(CERT_RSA_NAME).is_err() { return Err(SignerError::Validation("No RSA Signature".into())); }
         archive.by_name(CERT_RSA_NAME)?.read_to_end(&mut rsa)?;
@@ -439,6 +374,7 @@ impl ArtifactVerifier {
         v.update(&sf)?;
         if !v.verify(raw_sig)? { return Err(SignerError::Validation("Invalid RSA Signature".into())); }
 
+        // 2. Verify Manifest Hash
         let mut man = Vec::new(); 
         if archive.by_name(MANIFEST_NAME).is_err() { return Err(SignerError::Validation("No Manifest".into())); }
         archive.by_name(MANIFEST_NAME)?.read_to_end(&mut man)?;
@@ -448,6 +384,7 @@ impl ArtifactVerifier {
             return Err(SignerError::Validation("SF-Manifest Mismatch".into())); 
         }
 
+        // 3. Verify Files
         let s = String::from_utf8_lossy(&man);
         let mut cur = String::new();
         for line in s.lines() {
