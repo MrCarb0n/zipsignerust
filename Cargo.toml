@@ -13,6 +13,10 @@ sha1 = "0.10.1"
 base64 = "0.21.7"
 regex = "1.10.2"
 
+# --- UI/UX Dependencies ---
+colored = "2.0"
+indicatif = "0.17"
+
 # --- Production Optimizations ---
 [profile.release]
 opt-level = "z"
