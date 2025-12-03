@@ -20,17 +20,20 @@ jobs:
       # Fail the entire workflow if any matrix job fails
       fail-fast: false
       matrix:
-        # Define the build targets and their corresponding output file names
+        # Define the build targets and their properties
         include:
           - target: x86_64-unknown-linux-gnu
             artifact_name: zipsignerust
             output_name: zipsignerust-linux-x64
+            build_type: native
           - target: x86_64-pc-windows-gnu
             artifact_name: zipsignerust.exe
             output_name: zipsignerust-windows-x64.exe
+            build_type: cross
           - target: aarch64-linux-android
             artifact_name: zipsignerust
             output_name: zipsignerust-android-arm64
+            build_type: android
 
     steps:
       - name: Checkout code
@@ -64,34 +67,40 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
-      # Set up the Android NDK, but only for the Android build job
+      # This step will only run for the Android job
       - name: Setup Android NDK
-        if: matrix.target == 'aarch64-linux-android'
+        if: matrix.build_type == 'android'
         uses: nttld/setup-ndk@v1
         id: ndk
         with:
           ndk-version: r26b
 
-      # Run the build, with special handling for the Android target
+      # A single, unified build step that handles all three cases cleanly
       - name: Build
         run: |
-          if [ "${{ matrix.target }}" == "aarch64-linux-android" ]; then
-            # Special build for Android
-            export NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
-            export CC="aarch64-linux-android33-clang"
-            export CXX="aarch64-linux-android33-clang++"
-            export AR="llvm-ar"
-            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="aarch64-linux-android33-clang"
-            export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L ${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33"
-            export PATH="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-            cross build --release --target ${{ matrix.target }}
-          elif [ "${{ matrix.target }}" == "x86_64-pc-windows-gnu" ]; then
-            # Standard cross build for Windows
-            cross build --release --target ${{ matrix.target }}
-          else
-            # Native build for Linux
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          case "${{ matrix.build_type }}" in
+            "android")
+              echo "Building for Android with NDK..."
+              # Set all environment variables for the build in one block
+              export NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
+              export PATH="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+              export CC="aarch64-linux-android33-clang"
+              export CXX="aarch64-linux-android33-clang++"
+              export AR="llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="aarch64-linux-android33-clang"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L ${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33"
+              # Run the build
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+            "cross")
+              echo "Building for Windows with cross..."
+              cross build --release --target ${{ matrix.target }}
+              ;;
+            *)
+              echo "Building for Linux natively..."
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+          esac
 
       # Upload the compiled binary as a temporary artifact
       - name: Upload artifact
@@ -110,14 +119,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Download all the artifacts from the build jobs
+      # Download all artifacts from the build jobs
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           # Download all artifacts into a directory
           path: release-artifacts
 
-      # Update the 'latest' pre-release with the new binaries.
+      # Update the 'latest' pre-release with the new binaries
       - name: Update Release
         uses: softprops/action-gh-release@v2
         with:
