@@ -146,17 +146,18 @@ jobs:
 
             | Platform | Binary |
             | :--- | :--- |
-            | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-linux-x64) |
-            | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-windows-x64.exe) |
-            | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-android-arm64) |
+            | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-linux-x64) |
+            | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-windows-x64.exe) |
+            | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-android-arm64) |
 
             ---
 
             ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
           prerelease: true
+          # FIX: Corrected the file paths to point to the actual filenames inside the artifact directories.
           files: |
-            release-artifacts/zipsignerust-linux-x64/zipsignerust-linux-x64
-            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust-windows-x64.exe
-            release-artifacts/zipsignerust-android-arm64/zipsignerust-android-arm64
+            release-artifacts/zipsignerust-linux-x64/zipsignerust
+            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe
+            release-artifacts/zipsignerust-android-arm64/zipsignerust
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
