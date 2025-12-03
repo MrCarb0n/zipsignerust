@@ -1,6 +1,6 @@
 [package]
 name = "zipsignerust"
-version = "3.0.0"
+version = "3.0.0" # Major Rebrand Version
 edition = "2021"
 authors = ["Tiash H Kabir (@MrCarb0n)"]
 description = "High-performance Android ZIP Signer"
@@ -8,11 +8,11 @@ description = "High-performance Android ZIP Signer"
 [dependencies]
 zip = "0.6.6"
 openssl = { version = "0.10.61", features = ["vendored"] }
-clap = { version = "4.5.4", features = ["cargo"] }
+clap = { version = "4.5.4", features = ["cargo"] } # Enable cargo feature for better help generation
 sha1 = "0.10.1"
 base64 = "0.21.7"
 regex = "1.10.2"
-colored = "2.1.0"
+colored = "2.1.0" # Added for aesthetic logs
 
 [profile.release]
 opt-level = "z"

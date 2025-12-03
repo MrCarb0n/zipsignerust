@@ -412,6 +412,7 @@ impl ArtifactVerifier {
     }
 }
 
+// --- Error Handling ---
 #[derive(Debug)]
 enum SignerError {
     Io(io::Error),
@@ -420,6 +421,7 @@ enum SignerError {
     Validation(String),
     Config(String),
 }
+
 impl fmt::Display for SignerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
