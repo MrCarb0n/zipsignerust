@@ -84,14 +84,9 @@ jobs:
         run: cross build --release --target x86_64-pc-windows-gnu
 
       # Build for Android ARM64 using 'cross'.
-      # We mount the NDK into the container and tell Cargo to use the NDK's linker.
+      # FINAL FIX: Simply tell 'cross' where the NDK is. It will handle the rest.
       - name: Build for Android ARM64
-        env:
-          # FIX: Mount the NDK from the host into the cross container at /ndk
-          CROSS_CONTAINER_OPTS: -v ${{ steps.ndk.outputs.ndk-path }}:/ndk
-          # FIX: Point the linker to the NDK path *inside* the container
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: /ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-clang
-        run: cross build --release --target aarch64-linux-android
+        run: ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }} cross build --release --target aarch64-linux-android
 
       # Prepare the release directory and rename the binaries.
       # The certs/ directory is already available to the build process.

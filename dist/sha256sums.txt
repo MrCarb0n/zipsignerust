@@ -1,3 +1,0 @@
-fa6c2b096579d349de545c753c852d4eef85fadb582dafd867c0ead2e215403a  dist/zipsignerust-android-arm64
-93745931511c77aeaaed6b3d4b7290403593e609aa777868282eb3b33e1290b6  dist/zipsignerust-linux-x64
-c91a3011f177facb137f1c8622e37c69e5dddd85746ccd4962c3e945fbb75cba  dist/zipsignerust-windows-x64.exe
