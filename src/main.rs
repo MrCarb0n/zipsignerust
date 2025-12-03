@@ -362,12 +362,6 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    fn write_entry(w: &mut ZipWriter<BufWriter<File>>, n: &str, d: &[u8], t: DateTime) -> Result<(), SignerError> {
-        w.start_file(n, FileOptions::default().compression_method(CompressionMethod::Deflated).last_modified_time(t))?;
-        w.write_all(d)?;
-        Ok(())
-    }
-
     fn gen_manifest(digests: &BTreeMap<String, String>) -> Vec<u8> {
         let mut out = format!("Manifest-Version: 1.0\r\nCreated-By: {}\r\n\r\n", APP_VERSION).into_bytes();
         for (n, h) in digests { out.extend(format!("Name: {}\r\nSHA1-Digest: {}\r\n\r\n", n, h).bytes()); }

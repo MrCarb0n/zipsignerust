@@ -67,6 +67,14 @@ check_prerequisites() {
         echo "Please install Rust from https://rustup.rs/"
         exit 1
     fi
+
+    # Check for MinGW-w64 if Windows target is in the list
+    if [[ " ${TARGETS[*]} " =~ " x86_64-pc-windows-gnu " ]] && ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
+        log_error "MinGW-w64 toolchain is required for Windows cross-compilation but not found."
+        echo "On Debian/Ubuntu, you can install it with: sudo apt install mingw-w64"
+        exit 1
+    fi
+
     log_success "Prerequisites check passed."
 }
 
@@ -126,7 +134,7 @@ build_for_target() {
 }
 
 configure_android_env() {
-    local android_target=$1
+    local android_target=$1 # e.g., aarch64-linux-android
     log_info "Configuring environment for Android ($android_target)..."
 
     # Determine Host OS for NDK Toolchain
@@ -142,15 +150,19 @@ configure_android_env() {
     local api_level=$MIN_SDK
     local arch_triple="${android_target%%-*}" # e.g., aarch64
     
-    # --- FIX: Convert target triple to uppercase for Cargo variables ---
-    local target_upper="${android_target//-/_}"
-    target_upper="${target_upper^^}"
+    # --- FIX: Correctly transform target triple for variable names ---
+    # cc-rs expects hyphens to be replaced with underscores for env var names.
+    local target_for_cc="${android_target//-/_}" # e.g., aarch64_linux_android
+    # Cargo expects the target triple to be uppercased and hyphens replaced with underscores.
+    local target_for_cargo="${target_for_cc^^}" # e.g., AARCH64_LINUX_ANDROID
 
-    # Set compilers for C/C++ (Needed for OpenSSL vendored build)
-    export CC_"${target_upper}"="$toolchain/${arch_triple}-linux-android${api_level}-clang"
-    export CXX_"${target_upper}"="$toolchain/${arch_triple}-linux-android${api_level}-clang++"
-    export AR_"${target_upper}"="$toolchain/llvm-ar"
-    export CARGO_TARGET_"${target_upper}"_LINKER="$toolchain/${arch_triple}-linux-android${api_level}-clang"
+    # Set compilers for C/C++ for cc-rs
+    export CC_"${target_for_cc}"="$toolchain/${arch_triple}-linux-android${api_level}-clang"
+    export CXX_"${target_for_cc}"="$toolchain/${arch_triple}-linux-android${api_level}-clang++"
+    export AR_"${target_for_cc}"="$toolchain/llvm-ar"
+    
+    # Tell Cargo which linker to use
+    export CARGO_TARGET_"${target_for_cargo}"_LINKER="$toolchain/${arch_triple}-linux-android${api_level}-clang"
 }
 
 package_and_verify() {
@@ -159,7 +171,8 @@ package_and_verify() {
     mkdir -p dist
 
     local checksum_file="dist/sha256sums.txt"
-    > "$checksum_file" # Clear checksum file
+    # --- FIX: Use printf to robustly create and clear the checksum file ---
+    printf "" > "$checksum_file"
 
     for target in "${TARGETS[@]}"; do
         local binary_path="target/$target/release/$APP_NAME"
