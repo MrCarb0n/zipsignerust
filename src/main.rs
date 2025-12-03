@@ -98,17 +98,17 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     let mut key_chain = KeyChain::new(priv_path, pub_path)?;
     spinner.finish_with_message("Keys loaded successfully.");
 
-    // --- NEW: Check if file is already signed ---
-    if !matches.get_flag("verify") && is_already_signed(&input_path)? {
-        print_error("The input ZIP is already signed. Re-signing is redundant. Use --verify to check its signature.");
-        std::process::exit(1);
-    }
-
     if matches.get_flag("verify") {
         print_info(&format!("Verifying: {}", input_path.display().to_string().cyan()));
         if ArtifactVerifier::verify(&input_path, &key_chain)? {
             print_success("Verification Passed. The file is authentic.");
         }
+        return Ok(());
+    }
+
+    // --- Pre-signature check ---
+    if ArtifactProcessor::is_already_signed(&input_path)? {
+        print_warning("Input file is already signed. Skipping signing to create a redundant signature.");
         return Ok(());
     }
 
@@ -131,15 +131,21 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     key_chain.ensure_certificate()?;
     spinner.finish_with_message("Analysis complete.");
 
-    // --- NEW: Gracefully handle existing .bak files ---
     let working_input = if inplace {
+        // --- Graceful .bak handling ---
         let backup_path = input_path.with_extension("bak");
-        if backup_path.exists() {
-            print_warning(&format!("Overwriting existing backup: {}", backup_path.display().to_string().yellow()));
+        let mut final_backup_path = backup_path.clone();
+        let mut backup_suffix = 1;
+        while final_backup_path.exists() {
+            final_backup_path.set_extension(format!("bak{}", backup_suffix));
+            backup_suffix += 1;
         }
-        fs::rename(&input_path, &backup_path)?;
-        print_warning(&format!("Backup created at: {}", backup_path.display().to_string().yellow()));
-        backup_path
+        if final_backup_path != backup_path {
+            print_warning(&format!("Existing backup found, renaming to {}", final_backup_path.display().to_string().yellow()));
+        }
+        fs::rename(&input_path, &final_backup_path)?;
+        print_success(&format!("Backup created at {}", final_backup_path.display().to_string().green()));
+        final_backup_path
     } else {
         input_path.clone()
     };
@@ -155,18 +161,6 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             Err(e)
         }
     }
-}
-
-// --- NEW: Function to check for existing signatures ---
-fn is_already_signed(path: &Path) -> Result<bool, SignerError> {
-    let file = File::open(path)?;
-    let archive = ZipArchive::new(BufReader::new(file))?;
-    for name in [MANIFEST_NAME, CERT_SF_NAME, CERT_RSA_NAME] {
-        if archive.by_name(name).is_ok() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn print_header(text: &str) {
@@ -295,6 +289,16 @@ impl KeyChain {
 
 struct ArtifactProcessor;
 impl ArtifactProcessor {
+    fn is_already_signed(path: &Path) -> Result<bool, SignerError> {
+        let file = File::open(path)?;
+        let archive = ZipArchive::new(BufReader::new(file))?;
+        if archive.by_name(CERT_SF_NAME).is_ok() {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn compute_manifest_digests(path: &Path) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
