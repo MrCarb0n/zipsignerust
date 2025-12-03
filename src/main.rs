@@ -79,6 +79,7 @@ fn main() {
         .arg(Arg::new("public_key").short('p').long("public-key").help("Path to public key/cert (PEM)"))
         .arg(Arg::new("overwrite").short('f').long("overwrite").action(ArgAction::SetTrue).help("Force overwrite existing output"))
         .arg(Arg::new("inplace").short('i').long("inplace").action(ArgAction::SetTrue).help("Sign in-place (overwrites input)"))
+        .arg(Arg::new("reproducible").short('r').long("reproducible").action(ArgAction::SetTrue).help("Force all files in output to follow certificate creation date for reproducibility"))
         .get_matches();
 
     if let Err(e) = run(&matches) {
@@ -151,7 +152,8 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     };
 
     print_info("Signing and packing...");
-    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests, inplace) {
+    let force_reproducible = matches.get_flag("reproducible");
+    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests, force_reproducible) {
         Ok(_) => {
             print_success(&format!("Signed ZIP created at {}", output_path.display().to_string().green()));
             Ok(())
@@ -314,7 +316,7 @@ impl ArtifactProcessor {
         Ok(digests)
     }
 
-    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>, is_inplace: bool) -> Result<(), SignerError> {
+    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>, force_reproducible_timestamps: bool) -> Result<(), SignerError> {
         let timestamp = keys.get_timestamp_oracle();
         let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
@@ -332,8 +334,8 @@ impl ArtifactProcessor {
             if !files_to_overwrite.contains(name.as_str()) {
                 let options = FileOptions::default()
                     .compression_method(file.compression())
-                    // If in-place, use the certificate's timestamp for reproducibility. Otherwise, preserve original.
-                    .last_modified_time(if is_inplace { timestamp } else { file.last_modified() })
+                    // Use reproducible timestamp if requested, otherwise preserve original
+                    .last_modified_time(if force_reproducible_timestamps { timestamp } else { file.last_modified() })
                     .unix_permissions(file.unix_mode().unwrap_or(0o644));
                 
                 writer.start_file(name, options)?;
@@ -351,9 +353,9 @@ impl ArtifactProcessor {
         let sf = Self::gen_sf(&manifest);
         let rsa = Self::gen_rsa(keys, &sf)?;
 
+        // New signature files always use the certificate timestamp for reproducibility
         let sig_options = FileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            // New signature files always use the certificate timestamp
             .last_modified_time(timestamp);
 
         writer.start_file(MANIFEST_NAME, sig_options)?;
