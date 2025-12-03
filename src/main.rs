@@ -98,6 +98,12 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     let mut key_chain = KeyChain::new(priv_path, pub_path)?;
     spinner.finish_with_message("Keys loaded successfully.");
 
+    // --- NEW: Check if file is already signed ---
+    if !matches.get_flag("verify") && is_already_signed(&input_path)? {
+        print_error("The input ZIP is already signed. Re-signing is redundant. Use --verify to check its signature.");
+        std::process::exit(1);
+    }
+
     if matches.get_flag("verify") {
         print_info(&format!("Verifying: {}", input_path.display().to_string().cyan()));
         if ArtifactVerifier::verify(&input_path, &key_chain)? {
@@ -125,11 +131,15 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     key_chain.ensure_certificate()?;
     spinner.finish_with_message("Analysis complete.");
 
+    // --- NEW: Gracefully handle existing .bak files ---
     let working_input = if inplace {
-        let backup = input_path.with_extension("bak");
-        fs::rename(&input_path, &backup)?;
-        print_warning(&format!("Backup created: {}", backup.display().to_string().yellow()));
-        backup
+        let backup_path = input_path.with_extension("bak");
+        if backup_path.exists() {
+            print_warning(&format!("Overwriting existing backup: {}", backup_path.display().to_string().yellow()));
+        }
+        fs::rename(&input_path, &backup_path)?;
+        print_warning(&format!("Backup created at: {}", backup_path.display().to_string().yellow()));
+        backup_path
     } else {
         input_path.clone()
     };
@@ -145,6 +155,18 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             Err(e)
         }
     }
+}
+
+// --- NEW: Function to check for existing signatures ---
+fn is_already_signed(path: &Path) -> Result<bool, SignerError> {
+    let file = File::open(path)?;
+    let archive = ZipArchive::new(BufReader::new(file))?;
+    for name in [MANIFEST_NAME, CERT_SF_NAME, CERT_RSA_NAME] {
+        if archive.by_name(name).is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn print_header(text: &str) {
