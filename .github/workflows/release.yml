@@ -126,50 +126,42 @@ jobs:
           # Download all artifacts into a directory
           path: release-artifacts
 
-      # NEW STEP: Delete the existing 'latest' release to ensure a clean state.
-      - name: Delete existing 'latest' release
-        run: |
-          if gh release view latest > /dev/null 2>&1; then
-            echo "Release 'latest' found. Deleting it..."
-            gh release delete latest --yes
-          else
-            echo "Release 'latest' not found. Proceeding with creation."
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Update the 'latest' pre-release with the new binaries.
+      # FINAL FIX: Use the GitHub CLI to delete and recreate the release for maximum reliability.
       - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "latest"
-          name: "Latest Development Build"
-          # The body is updated with the latest commit SHA and direct download links
-          body: |
-            Automated build from the latest commit on the `master` branch.
+        run: |
+          # Create a temporary file for the release notes
+          cat > release_notes.md << 'EOF'
+          Automated build from the latest commit on the \`master\` branch.
 
-            **Commit:** `${{ github.sha }}`
+          **Commit:** \`${{ github.sha }}\`
 
-            ---
+          ---
 
-            ### 📦 Downloads
+          ### 📦 Downloads
 
-            Choose the binary for your platform:
+          Choose the binary for your platform:
 
-            | Platform | Binary |
-            | :--- | :--- |
-            | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-linux-x64) |
-            | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-windows-x64.exe) |
-            | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-android-arm64) |
+          | Platform | Binary |
+          | :--- | :--- |
+          | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-linux-x64) |
+          | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-windows-x64.exe) |
+          | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-android-arm64) |
 
-            ---
+          ---
 
-            ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
-          prerelease: true
-          # The files to upload as release assets
-          files: |
-            release-artifacts/zipsignerust-linux-x64/zipsignerust
-            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe
+          ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
+          EOF
+
+          # Delete the old 'latest' release if it exists, then create a new one.
+          # The 'gh' CLI handles this atomically and reliably.
+          gh release delete latest --yes || true
+          gh release create latest \
+            --title "Latest Development Build" \
+            --notes-file release_notes.md \
+            --prerelease \
+            --latest \
+            release-artifacts/zipsignerust-linux-x64/zipsignerust \
+            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe \
             release-artifacts/zipsignerust-android-arm64/zipsignerust
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
