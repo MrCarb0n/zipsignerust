@@ -58,7 +58,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-release-
 
-      # Install 'cross' for easy cross-compilation using Docker
+      # Install 'cross' ONLY for the Windows build.
       - name: Install cross
         run: cargo install cross
 
@@ -83,10 +83,22 @@ jobs:
       - name: Build for Windows x64
         run: cross build --release --target x86_64-pc-windows-gnu
 
-      # Build for Android ARM64 using 'cross'.
-      # FINAL FIX: Simply tell 'cross' where the NDK is. It will handle the rest.
+      # FINAL FIX: Build for Android ARM64 by configuring cargo to use the NDK directly.
       - name: Build for Android ARM64
-        run: ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }} cross build --release --target aarch64-linux-android
+        env:
+          # Define the NDK path for easy reference
+          NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          # Configure the C/C++ compiler and archiver for the build scripts (build.rs)
+          CC: aarch64-linux-android33-clang
+          CXX: aarch64-linux-android33-clang++
+          AR: llvm-ar
+          # Configure the Rust linker and library paths for the final linking stage
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android33-clang
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -L ${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33
+        run: |
+          # Add the NDK tools to the PATH so the build scripts can find them
+          export PATH="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          cargo build --release --target aarch64-linux-android
 
       # Prepare the release directory and rename the binaries.
       # The certs/ directory is already available to the build process.
