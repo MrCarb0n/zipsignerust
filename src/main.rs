@@ -108,7 +108,7 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
 
     let inplace = matches.get_flag("inplace");
     let output_path = if inplace {
-        input_path.clone()
+        input_path.with_extension("signed.zip")
     } else if let Some(out) = matches.get_one::<String>("output") {
         PathBuf::from(out)
     } else {
@@ -135,9 +135,8 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     };
 
     print_info("Signing and packing...");
-    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests) {
+    match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests, inplace) {
         Ok(_) => {
-            if inplace { fs::remove_file(&working_input)?; }
             print_success(&format!("Signed ZIP created at {}", output_path.display().to_string().green()));
             Ok(())
         }
@@ -262,7 +261,7 @@ impl KeyChain {
             
             if let Some(caps) = re.captures(&time_str) {
                 let month = match &caps[1] { "Jan"=>1,"Feb"=>2,"Mar"=>3,"Apr"=>4,"May"=>5,"Jun"=>6,"Jul"=>7,"Aug"=>8,"Sep"=>9,"Oct"=>10,"Nov"=>11,"Dec"=>12, _=>1 };
-                let year = caps[5].parse::<u16>().unwrap_or(1980).max(1980);
+                let year = caps[6].parse::<u16>().unwrap_or(1980).max(1980);
                 if let Ok(dt) = DateTime::from_date_and_time(year, month, caps[2].parse().unwrap_or(1), 0, 0, 0) {
                     return dt;
                 }
@@ -289,7 +288,7 @@ impl ArtifactProcessor {
         Ok(digests)
     }
 
-    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>) -> Result<(), SignerError> {
+    fn write_signed_zip(input: &Path, output: &Path, keys: &KeyChain, digests: &BTreeMap<String, String>, is_inplace: bool) -> Result<(), SignerError> {
         let timestamp = keys.get_timestamp_oracle();
         let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
@@ -307,7 +306,8 @@ impl ArtifactProcessor {
             if !files_to_overwrite.contains(name.as_str()) {
                 let options = FileOptions::default()
                     .compression_method(file.compression())
-                    .last_modified_time(file.last_modified())
+                    // If in-place, use the certificate's timestamp for reproducibility. Otherwise, preserve original.
+                    .last_modified_time(if is_inplace { timestamp } else { file.last_modified() })
                     .unix_permissions(file.unix_mode().unwrap_or(0o644));
                 
                 writer.start_file(name, options)?;
@@ -327,6 +327,7 @@ impl ArtifactProcessor {
 
         let sig_options = FileOptions::default()
             .compression_method(CompressionMethod::Deflated)
+            // New signature files always use the certificate timestamp
             .last_modified_time(timestamp);
 
         writer.start_file(MANIFEST_NAME, sig_options)?;
