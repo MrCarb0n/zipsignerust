@@ -115,20 +115,36 @@ jobs:
         with:
           path: release-artifacts
 
-      # DEFINITIVE FIX: Delete and recreate the 'latest' release in a single, atomic command.
+      # FINAL DEBUGGING STEP: Rename files before uploading to avoid potential conflicts.
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p final-assets
+
+          # Rename the Linux binary
+          mv release-artifacts/zipsignerust-linux-x64/zipsignerust final-assets/zipsignerust-linux-x64
+
+          # Rename the Windows binary
+          mv release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe final-assets/zipsignerust-windows-x64.exe
+
+          # Rename the Android binary
+          mv release-artifacts/zipsignerust-android-arm64/zipsignerust final-assets/zipsignerust-android-arm64
+
+          echo "Assets prepared for release."
+
+      # Delete the old 'latest' release and create a new one with the renamed assets.
       - name: Create Release
         run: |
           # Delete the old 'latest' release to avoid conflicts.
           gh release delete latest --yes || true
 
-          # Create the new 'latest' release and upload all assets in one command.
+          # Create the new 'latest' release and upload all renamed assets in one command.
           gh release create latest \
             --title "Latest Development Build" \
             --prerelease \
             --latest \
             --notes "Automated build from commit ${{ github.sha }} on the \`master\` branch." \
-            release-artifacts/zipsignerust-linux-x64/zipsignerust \
-            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe \
-            release-artifacts/zipsignerust-android-arm64/zipsignerust
+            final-assets/zipsignerust-linux-x64 \
+            final-assets/zipsignerust-windows-x64.exe \
+            final-assets/zipsignerust-android-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
