@@ -88,15 +88,23 @@ fn main() {
 }
 
 // --- Logging & UI ---
+
 fn print_banner() {
-    println!("{}", "╔══════════════════════════════════════╗".cyan());
-    println!("{}   {} v{}", "║".cyan(), APP_NAME.bold().white(), APP_VERSION.green());
-    println!("{}   {}", "║".cyan(), "Powering Android Builds".italic().white());
-    println!("{}", "╚══════════════════════════════════════╝".cyan());
+    println!("{}", "╔═══════════════════════════════════════════╗".bright_black());
+    println!("{}   {} v{} {}", "║".bright_black(), APP_NAME.bold().white(), APP_VERSION.green(), "Professional Edition".dimmed());
+    println!("{}   {}", "║".bright_black(), "Cryptographic Signing Engine".italic().white());
+    println!("{}", "╚═══════════════════════════════════════════╝".bright_black());
+    println!(); // Add a blank line for spacing
+}
+
+fn print_mode_header(title: &str) {
+    println!("{}", "────────────────────────────────────────────".cyan());
+    println!("{} {} {}", "▶".cyan().bold(), title.bold(), "──────────────────────────".cyan());
+    println!("{}", "────────────────────────────────────────────".cyan());
 }
 
 fn log_info(msg: &str) {
-    println!("{} {}", "::".blue().bold(), msg);
+    println!("{} {}", "[INFO]".blue().bold(), msg);
 }
 
 fn log_success(msg: &str) {
@@ -108,7 +116,11 @@ fn log_warn(msg: &str) {
 }
 
 fn log_error(msg: &str) {
-    eprintln!("{} {}", "✗ Error:".red().bold(), msg.red());
+    eprintln!("{} {}", "✗".red().bold(), msg.red());
+}
+
+fn log_error_detail(msg: &str) {
+    eprintln!("  ↳ {}", msg.dimmed());
 }
 
 // --- Logic ---
@@ -116,21 +128,24 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     let input_path = PathBuf::from(matches.get_one::<String>("input").unwrap());
     
     // 1. Load Keys
-    log_info("Initializing Cryptography Engine...");
+    log_info("Loading cryptographic keys...");
     let priv_path = matches.get_one::<String>("private_key").map(Path::new);
     let pub_path = matches.get_one::<String>("public_key").map(Path::new);
     let mut key_chain = KeyChain::new(priv_path, pub_path)?;
 
     // 2. Verify Mode
     if matches.get_flag("verify") {
-        log_info(&format!("Verifying: {}", input_path.display()));
+        print_mode_header("VERIFICATION MODE");
+        log_info(&format!("Verifying integrity of: `{}`", input_path.display()));
         if ArtifactVerifier::verify(&input_path, &key_chain)? {
-            log_success("Signature Valid. The file is authentic.");
+            log_success("Signature is valid. The artifact is authentic.");
         }
         return Ok(());
     }
 
     // 3. Signing Mode
+    print_mode_header("SIGNING MODE");
+    
     let inplace = matches.get_flag("inplace");
     let output_path = if inplace {
         input_path.clone()
@@ -141,12 +156,15 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         input_path.with_file_name(format!("{}_signed.zip", stem))
     };
 
+    log_info(&format!("Source: `{}`", input_path.display()));
+    log_info(&format!("Target: `{}`", output_path.display()));
+
     if output_path.exists() && !inplace && !matches.get_flag("overwrite") {
-        return Err(SignerError::Config(format!("Output file exists: {}. Use --overwrite.", output_path.display())));
+        return Err(SignerError::Config(format!("Output file already exists: `{}`. Use --overwrite to proceed.", output_path.display())));
     }
 
     // 4. Processing
-    log_info("Analyzing Archive Structure...");
+    log_info("Parsing archive and computing file digests...");
     let digests = ArtifactProcessor::compute_manifest_digests(&input_path)?;
 
     key_chain.ensure_certificate()?;
@@ -155,21 +173,27 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     let working_input = if inplace {
         let backup = input_path.with_extension("bak");
         fs::rename(&input_path, &backup)?;
-        log_warn(&format!("Backup created: {}", backup.display()));
+        log_warn(&format!("Original file backed up to: `{}`", backup.display()));
         backup
     } else {
         input_path.clone()
     };
 
-    log_info("Signing Artifacts...");
+    log_info("Generating signature and writing signed archive...");
     match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests) {
         Ok(_) => {
-            if inplace { fs::remove_file(&working_input)?; }
-            log_success(&format!("Signed ZIP ready: {}", output_path.display()));
+            if inplace {
+                log_success(&format!("In-place signing complete. Original file preserved at `{}`.", working_input.display()));
+            } else {
+                log_success(&format!("Signed archive successfully created at: `{}`", output_path.display()));
+            }
             Ok(())
         }
         Err(e) => {
-            if inplace { fs::rename(&working_input, &input_path)?; }
+            if inplace {
+                fs::rename(&working_input, &input_path)?;
+                log_error_detail("Original file has been restored from backup.");
+            }
             Err(e)
         }
     }
