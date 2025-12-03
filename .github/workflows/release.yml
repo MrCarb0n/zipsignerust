@@ -115,13 +115,10 @@ jobs:
         with:
           path: release-artifacts
 
-      # DEFINITIVE FIX: Create a new, unique release for every push.
+      # DEFINITIVE FIX: Delete and recreate the 'latest' release in a single, atomic command.
       - name: Create Release
         run: |
-          # Create a unique tag for this specific build.
-          UNIQUE_TAG="build-${{ github.sha }}"
-
-          # Create the release notes file.
+          # Create a release notes file.
           cat > release_notes.md << 'EOF'
           Automated build from commit \`${{ github.sha }}\` on the \`master\` branch.
 
@@ -142,8 +139,10 @@ jobs:
           ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
           EOF
 
-          # Create a new release. The '--latest' flag makes it the default 'Latest' release.
-          gh release create "$UNIQUE_TAG" \
+          # Delete the old 'latest' release (if it exists) and create a new one from scratch.
+          # This is the most robust method to avoid asset conflicts.
+          gh release delete latest --yes || true
+          gh release create latest \
             --title "Latest Development Build" \
             --notes-file release_notes.md \
             --prerelease \
