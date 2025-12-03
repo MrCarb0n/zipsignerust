@@ -131,6 +131,14 @@ configure_android_env() {
     local target_for_cc="${android_target//-/_}"
     local target_for_cargo="${target_for_cc^^}"
 
+    # --- CRITICAL FIX FOR OPENSSL ---
+    # 1. Add toolchain to PATH so 'openssl-sys' can find 'ar', 'ranlib', etc.
+    export PATH="$toolchain:$PATH"
+    
+    # 2. Explicitly set RANLIB (OpenSSL build script often fails without this on Android)
+    export RANLIB_"${target_for_cc}"="$toolchain/llvm-ranlib"
+    # --------------------------------
+
     export CC_"${target_for_cc}"="$toolchain/${arch_triple}-linux-android${api_level}-clang"
     export CXX_"${target_for_cc}"="$toolchain/${arch_triple}-linux-android${api_level}-clang++"
     export AR_"${target_for_cc}"="$toolchain/llvm-ar"
