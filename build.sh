@@ -171,7 +171,7 @@ package_and_verify() {
     mkdir -p dist
 
     local checksum_file="dist/sha256sums.txt"
-    # --- FIX: Use printf to robustly create and clear the checksum file ---
+    # Use printf to robustly create and clear the checksum file
     printf "" > "$checksum_file"
 
     for target in "${TARGETS[@]}"; do
@@ -188,11 +188,11 @@ package_and_verify() {
         cp "$binary_path" "dist/$output_name"
         log_success "Packaged $output_name"
 
-        # Generate checksum
+        # --- FINAL FIX: Checksum the file using its full path ---
         if command -v sha256sum &> /dev/null; then
-            (cd dist && sha256sum "$output_name" >> "$checksum_file")
+            sha256sum "dist/$output_name" >> "$checksum_file"
         elif command -v shasum &> /dev/null; then
-            (cd dist && shasum -a 256 "$output_name" >> "$checksum_file")
+            shasum -a 256 "dist/$output_name" >> "$checksum_file"
         else
             log_warn "sha256sum/shasum command not found. Skipping checksum generation."
         fi

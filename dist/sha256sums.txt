@@ -1,0 +1,2 @@
+88f7552db6665f383beb99c99985f2dc1362d3a525545df457b6ce8e9ad0f322  dist/zipsignerust-android-arm64
+2ae0588f18a66463e87c93f6db046564f623dd67c8c2f6fad13db3582934f3b9  dist/zipsignerust-linux-x64
