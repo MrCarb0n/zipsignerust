@@ -34,8 +34,9 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       # Install 'cross' ONLY for the Windows build.
+      # FIX: Added --force to overwrite existing binary.
       - name: Install cross
-        run: cargo install cross
+        run: cargo install cross --force
 
       # Add the necessary compilation targets for our desired binaries
       - name: Add Rust targets
