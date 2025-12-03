@@ -111,7 +111,7 @@ jobs:
           EOF
 
       - name: Publish "Latest" Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2 # Updated to v2 to support 'make_latest'
         with:
           tag_name: latest
           name: "Latest Development Build"
