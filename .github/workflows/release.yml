@@ -56,7 +56,7 @@ jobs:
         with:
           path: ~/.cargo/bin
           key: ${{ runner.os }}-cross-v1
-
+      
       - name: Install cross
         if: steps.cache-cross.outputs.cache-hit != 'true'
         run: cargo install cross --force
@@ -119,16 +119,16 @@ jobs:
       - name: Prepare Release Assets
         run: |
           mkdir -p final-assets
-
+          
           # Rename the Linux binary
           mv release-artifacts/zipsignerust-linux-x64/zipsignerust final-assets/zipsignerust-linux-x64
-
+          
           # Rename the Windows binary
           mv release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe final-assets/zipsignerust-windows-x64.exe
-
+          
           # Rename the Android binary
           mv release-artifacts/zipsignerust-android-arm64/zipsignerust final-assets/zipsignerust-android-arm64
-
+          
           echo "Assets prepared for release."
 
       # Delete the old 'latest' release and create a new one with the renamed assets.
@@ -136,7 +136,305 @@ jobs:
         run: |
           # Delete the old 'latest' release to avoid conflicts.
           gh release delete latest --yes || true
+          
+          # Create the new 'latest' release and upload all renamed assets in one command.
+          gh release create latest \
+            --title "Latest Development Build" \
+            --prerelease \
+            --latest \
+            --notes "Automated build from commit ${{ github.sha }} on the \`master\` branch." \
+            final-assets/zipsignerust-linux-x64 \
+            final-assets/zipsignerust-windows-x64.exe \
+            final-assets/zipsignerust-android-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}# A high-performance workflow for automatically updating the 'latest' release.
 
+name: Automatic Latest Release
+
+# Trigger this workflow on every push to the master branch.
+on:
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # This job builds the release binaries in parallel for each target.
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not cancel all jobs if one fails.
+      fail-fast: false
+      matrix:
+        # Define the build targets and their properties.
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: zipsignerust
+            output_name: zipsignerust-linux-x64
+            build_type: native
+          - target: x86_64-pc-windows-gnu
+            artifact_name: zipsignerust.exe
+            output_name: zipsignerust-windows-x64.exe
+            build_type: cross
+          - target: aarch64-linux-android
+            artifact_name: zipsignerust
+            output_name: zipsignerust-android-arm64
+            build_type: android
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Cache cross
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cross-v1
+      
+      - name: Install cross
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: cargo install cross --force
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Setup Android NDK
+        if: matrix.build_type == 'android'
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26b
+
+      - name: Build
+        run: |
+          case "${{ matrix.build_type }}" in
+            "android")
+              echo "Building for Android with NDK..."
+              export NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
+              export PATH="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+              export CC="aarch64-linux-android33-clang"
+              export CXX="aarch64-linux-android33-clang++"
+              export AR="llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="aarch64-linux-android33-clang"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L ${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33"
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+            "cross")
+              echo "Building for Windows with cross..."
+              cross build --release --target ${{ matrix.target }}
+              ;;
+            *)
+              echo "Building for Linux natively..."
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+          esac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+  # This final job updates the GitHub Release after all builds are complete.
+  release:
+    name: Update Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      # FINAL DEBUGGING STEP: Rename files before uploading to avoid potential conflicts.
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p final-assets
+          
+          # Rename the Linux binary
+          mv release-artifacts/zipsignerust-linux-x64/zipsignerust final-assets/zipsignerust-linux-x64
+          
+          # Rename the Windows binary
+          mv release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe final-assets/zipsignerust-windows-x64.exe
+          
+          # Rename the Android binary
+          mv release-artifacts/zipsignerust-android-arm64/zipsignerust final-assets/zipsignerust-android-arm64
+          
+          echo "Assets prepared for release."
+
+      # Delete the old 'latest' release and create a new one with the renamed assets.
+      - name: Create Release
+        run: |
+          # Delete the old 'latest' release to avoid conflicts.
+          gh release delete latest --yes || true
+          
+          # Create the new 'latest' release and upload all renamed assets in one command.
+          gh release create latest \
+            --title "Latest Development Build" \
+            --prerelease \
+            --latest \
+            --notes "Automated build from commit ${{ github.sha }} on the \`master\` branch." \
+            final-assets/zipsignerust-linux-x64 \
+            final-assets/zipsignerust-windows-x64.exe \
+            final-assets/zipsignerust-android-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}# A high-performance workflow for automatically updating the 'latest' release.
+
+name: Automatic Latest Release
+
+# Trigger this workflow on every push to the master branch.
+on:
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # This job builds the release binaries in parallel for each target.
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not cancel all jobs if one fails.
+      fail-fast: false
+      matrix:
+        # Define the build targets and their properties.
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: zipsignerust
+            output_name: zipsignerust-linux-x64
+            build_type: native
+          - target: x86_64-pc-windows-gnu
+            artifact_name: zipsignerust.exe
+            output_name: zipsignerust-windows-x64.exe
+            build_type: cross
+          - target: aarch64-linux-android
+            artifact_name: zipsignerust
+            output_name: zipsignerust-android-arm64
+            build_type: android
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Cache cross
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-cross-v1
+      
+      - name: Install cross
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: cargo install cross --force
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Setup Android NDK
+        if: matrix.build_type == 'android'
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26b
+
+      - name: Build
+        run: |
+          case "${{ matrix.build_type }}" in
+            "android")
+              echo "Building for Android with NDK..."
+              export NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
+              export PATH="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+              export CC="aarch64-linux-android33-clang"
+              export CXX="aarch64-linux-android33-clang++"
+              export AR="llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="aarch64-linux-android33-clang"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L ${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33"
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+            "cross")
+              echo "Building for Windows with cross..."
+              cross build --release --target ${{ matrix.target }}
+              ;;
+            *)
+              echo "Building for Linux natively..."
+              cargo build --release --target ${{ matrix.target }}
+              ;;
+          esac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+  # This final job updates the GitHub Release after all builds are complete.
+  release:
+    name: Update Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      # FINAL DEBUGGING STEP: Rename files before uploading to avoid potential conflicts.
+      - name: Prepare Release Assets
+        run: |
+          mkdir -p final-assets
+          
+          # Rename the Linux binary
+          mv release-artifacts/zipsignerust-linux-x64/zipsignerust final-assets/zipsignerust-linux-x64
+          
+          # Rename the Windows binary
+          mv release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe final-assets/zipsignerust-windows-x64.exe
+          
+          # Rename the Android binary
+          mv release-artifacts/zipsignerust-android-arm64/zipsignerust final-assets/zipsignerust-android-arm64
+          
+          echo "Assets prepared for release."
+
+      # Delete the old 'latest' release and create a new one with the renamed assets.
+      - name: Create Release
+        run: |
+          # Delete the old 'latest' release to avoid conflicts.
+          gh release delete latest --yes || true
+          
           # Create the new 'latest' release and upload all renamed assets in one command.
           gh release create latest \
             --title "Latest Development Build" \
