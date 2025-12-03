@@ -1,18 +1,27 @@
-# A workflow for testing and automatically releasing zipsignerust on every push to main.
+# A workflow for testing and creating professional, versioned releases.
 
-name: Automatic Release
+name: Build and Release
 
-# Trigger this workflow on every push to the main branch.
+# Triggers:
+# - Push and Pull Requests to master: run tests only.
+# - Pushing a new version tag (e.g., v1.2.3): run tests, build, and create a full release.
 on:
   push:
     branches:
       - master
+  pull_request:
+    branches:
+      - master
+  # Trigger on version tags for releases
+  push:
+    tags:
+      - 'v*.*.*'
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # This job runs tests to ensure the code is healthy before building.
+  # This job runs tests on every push to ensure code quality.
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -36,10 +45,13 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-  # This job builds the release binaries and updates the 'latest' pre-release.
+  # This job builds the release binaries and creates a professional GitHub Release.
+  # It only runs when a version tag is pushed.
   build-and-release:
     name: Build and Release
     needs: test # Wait for the 'test' job to succeed first
+    # Only run this job for tags, not for pushes to the master branch
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -83,7 +95,7 @@ jobs:
       - name: Build for Windows x64
         run: cross build --release --target x86_64-pc-windows-gnu
 
-      # FINAL FIX: Build for Android ARM64 by configuring cargo to use the NDK directly.
+      # Build for Android ARM64 by configuring cargo to use the NDK directly.
       - name: Build for Android ARM64
         env:
           # Define the NDK path for easy reference
@@ -101,7 +113,6 @@ jobs:
           cargo build --release --target aarch64-linux-android
 
       # Prepare the release directory and rename the binaries.
-      # The certs/ directory is already available to the build process.
       - name: Prepare release artifacts
         run: |
           mkdir -p release
@@ -109,16 +120,57 @@ jobs:
           cp target/x86_64-pc-windows-gnu/release/zipsignerust.exe release/zipsignerust-windows-x64.exe
           cp target/aarch64-linux-android/release/zipsignerust release/zipsignerust-android-arm64
 
-      # Update the 'latest' pre-release with the new binaries.
-      - name: Update Release
+      # Create a new, professional-looking GitHub Release.
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          # This will create or update a pre-release tagged as 'latest'
-          tag_name: "latest"
-          name: "Development Build"
-          body: "Automated build from commit ${{ github.sha }}."
-          prerelease: true
-          # This will overwrite existing assets with the same name
+          # The name of the release, e.g., "zipsignerust v1.0.0"
+          name: zipsignerust ${{ github.ref_name }}
+          # The tag for the release, e.g., "v1.0.0"
+          tag_name: ${{ github.ref_name }}
+          # The body of the release, with all the fancy branding
+          body: |
+            ## 🚀 ${{ github.event.repository.name }} ${{ github.ref_name }}
+            
+            A high-performance, secure, and cross-platform command-line tool for signing ZIP, JAR, and APK files, written in Rust.
+            
+            **Author:** Tiash H Kabir (@MrCarb0n)
+            
+            ---
+            
+            ### ✨ What's Changed
+            ${{ github.event.head_commit.message }}
+            
+            ---
+            
+            ### 📦 Downloads
+            
+            Choose the binary for your platform:
+            
+            | Platform | Binary |
+            | :--- | :--- |
+            | **Linux x64** | `zipsignerust-linux-x64` |
+            | **Windows x64** | `zipsignerust-windows-x64.exe` |
+            | **Android ARM64** | `zipsignerust-android-arm64` |
+            
+            ---
+            
+            ### 🛠️ How to Use
+            
+            1.  Download the correct binary for your system.
+            2.  Make it executable (on Linux/macOS): `chmod +x zipsignerust-linux-x64`
+            3.  Sign your file! (This example uses the included test keys)
+                ```bash
+                ./zipsignerust-linux-x64 my-app.apk
+                ```
+            *For more advanced usage, see the [project README](https://github.com/MrCarb0n/zipsignerust#readme).*
+            
+            ---
+            
+            ⚠️ **Note:** This release includes a public test certificate for convenience. For production, you **must** use your own private signing keys.
+          # Automatically mark as a pre-release if the tag contains alpha, beta, or rc
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          # The files to upload as release assets
           files: |
             release/zipsignerust-linux-x64
             release/zipsignerust-windows-x64.exe
