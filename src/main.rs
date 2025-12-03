@@ -1,11 +1,6 @@
 /*
  * Android ZIP Signer v2.2 (Pure CLI Edition)
  * Refactored for Speed, Low RAM usage, and Scriptability.
- * 
- * CHANGELOG:
- * - Modified to preserve existing META-INF directory contents.
- * - Now only overwrites the specific signature files it generates.
- * - Enhanced terminal UI/UX with colors, icons, and progress spinners.
  */
 
 use std::{
@@ -36,11 +31,10 @@ use zip::{
 };
 use regex::Regex;
 
-// --- Constants ---
 const MANIFEST_NAME: &str = "META-INF/MANIFEST.MF";
 const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
-const BUFFER_SIZE: usize = 64 * 1024; // 64KB Buffer
+const BUFFER_SIZE: usize = 64 * 1024;
 const APP_NAME: &str = "zipsignerust";
 const APP_VERSION: &str = "2.2.0";
 const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
@@ -48,7 +42,6 @@ const APP_AUTHOR: &str = "Tiash H Kabir (@MrCarb0n)";
 const DEFAULT_PRIVATE_KEY: &str = include_str!("../certs/private_key.pem");
 const DEFAULT_PUBLIC_KEY: &str = include_str!("../certs/public_key.pem");
 
-// --- Error Handling ---
 #[derive(Debug)]
 enum SignerError {
     Io(io::Error),
@@ -74,7 +67,6 @@ impl From<io::Error> for SignerError { fn from(e: io::Error) -> Self { Self::Io(
 impl From<zip::result::ZipError> for SignerError { fn from(e: zip::result::ZipError) -> Self { Self::Zip(e) } }
 impl From<openssl::error::ErrorStack> for SignerError { fn from(e: openssl::error::ErrorStack) -> Self { Self::OpenSsl(e) } }
 
-// --- Main ---
 fn main() {
     let matches = Command::new(APP_NAME)
         .version(APP_VERSION)
@@ -100,14 +92,12 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     
     print_header(&format!("{} v{}", APP_NAME.bright_green().bold(), APP_VERSION.bright_black()));
     
-    // 1. Load Keys
     let spinner = create_spinner("Loading keys...");
     let priv_path = matches.get_one::<String>("private_key").map(Path::new);
     let pub_path = matches.get_one::<String>("public_key").map(Path::new);
     let mut key_chain = KeyChain::new(priv_path, pub_path)?;
     spinner.finish_with_message("Keys loaded successfully.");
 
-    // 2. Verify Mode
     if matches.get_flag("verify") {
         print_info(&format!("Verifying: {}", input_path.display().to_string().cyan()));
         if ArtifactVerifier::verify(&input_path, &key_chain)? {
@@ -116,7 +106,6 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         return Ok(());
     }
 
-    // 3. Signing Mode
     let inplace = matches.get_flag("inplace");
     let output_path = if inplace {
         input_path.clone()
@@ -131,13 +120,11 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         return Err(SignerError::Config(format!("Output file exists: {}. Use --overwrite.", output_path.display())));
     }
 
-    // 4. Processing
     let spinner = create_spinner("Analyzing artifacts...");
     let digests = ArtifactProcessor::compute_manifest_digests(&input_path)?;
     key_chain.ensure_certificate()?;
     spinner.finish_with_message("Analysis complete.");
 
-    // Handle Backup for In-Place
     let working_input = if inplace {
         let backup = input_path.with_extension("bak");
         fs::rename(&input_path, &backup)?;
@@ -161,7 +148,6 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     }
 }
 
-// --- UI Helper Functions ---
 fn print_header(text: &str) {
     println!("\n{}\n", text);
 }
@@ -194,8 +180,6 @@ fn create_spinner(message: &str) -> ProgressBar {
     spinner.set_message(message.to_string());
     spinner
 }
-
-// --- Components ---
 
 struct CryptoEngine;
 impl CryptoEngine {
@@ -278,7 +262,7 @@ impl KeyChain {
             
             if let Some(caps) = re.captures(&time_str) {
                 let month = match &caps[1] { "Jan"=>1,"Feb"=>2,"Mar"=>3,"Apr"=>4,"May"=>5,"Jun"=>6,"Jul"=>7,"Aug"=>8,"Sep"=>9,"Oct"=>10,"Nov"=>11,"Dec"=>12, _=>1 };
-                let year = caps[6].parse::<u16>().unwrap_or(1980).max(1980);
+                let year = caps[5].parse::<u16>().unwrap_or(1980).max(1980);
                 if let Ok(dt) = DateTime::from_date_and_time(year, month, caps[2].parse().unwrap_or(1), 0, 0, 0) {
                     return dt;
                 }
@@ -315,7 +299,6 @@ impl ArtifactProcessor {
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let mut buf = [0u8; BUFFER_SIZE];
 
-        // Step 1: Copy existing files
         let spinner = create_spinner("Preserving existing files...");
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
@@ -324,7 +307,6 @@ impl ArtifactProcessor {
             if !files_to_overwrite.contains(name.as_str()) {
                 let options = FileOptions::default()
                     .compression_method(file.compression())
-                    // Preserve the original file's timestamp and permissions
                     .last_modified_time(file.last_modified())
                     .unix_permissions(file.unix_mode().unwrap_or(0o644));
                 
@@ -338,7 +320,6 @@ impl ArtifactProcessor {
         }
         spinner.finish_with_message("Existing files preserved.");
         
-        // Step 2: Add new signature files
         let spinner = create_spinner("Adding new signature files...");
         let manifest = Self::gen_manifest(digests);
         let sf = Self::gen_sf(&manifest);
