@@ -6,7 +6,7 @@ name: Automatic Release
 on:
   push:
     branches:
-      - master
+      - main
 
 env:
   CARGO_TERM_COLOR: always
@@ -84,9 +84,12 @@ jobs:
         run: cross build --release --target x86_64-pc-windows-gnu
 
       # Build for Android ARM64 using 'cross' and the NDK
+      # We pass RUSTFLAGS to tell the linker where to find the NDK's system libraries.
       - name: Build for Android ARM64
         env:
           NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          # FIX: Add the NDK library path to RUSTFLAGS to resolve the linker error.
+          RUSTFLAGS: -L ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33
         run: cross build --release --target aarch64-linux-android
 
       # Prepare the release directory and rename the binaries.
