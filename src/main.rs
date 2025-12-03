@@ -139,12 +139,21 @@ fn run(matches: &clap::ArgMatches) -> Result<(), SignerError> {
     println!(":: Signing and packing...");
     match ArtifactProcessor::write_signed_zip(&working_input, &output_path, &key_chain, &digests) {
         Ok(_) => {
-            if inplace { fs::remove_file(&working_input)?; }
+            if inplace { 
+                // The .bak file is now intentionally kept after a successful in-place signing operation.
+                // fs::remove_file(&working_input)?; 
+                println!(":: Backup kept at: {}", working_input.display());
+            }
             println!("SUCCESS: Signed ZIP created at {}", output_path.display());
             Ok(())
         }
         Err(e) => {
-            if inplace { fs::rename(&working_input, &input_path)?; }
+            if inplace { 
+                // Restore the original file from the backup if signing failed
+                fs::remove_file(&input_path)?; // Remove the partially written file
+                fs::rename(&working_input, &input_path)?; 
+                eprintln!(":: Restored original file due to error.");
+            }
             Err(e)
         }
     }
@@ -207,7 +216,6 @@ impl KeyChain {
                 let mut builder = X509::builder()?;
                 builder.set_version(2)?;
                 
-                // FIX: Build name once and reuse it
                 let mut name_builder = X509Name::builder()?;
                 name_builder.append_entry_by_text("CN", "Zipsigner Auto-Gen")?;
                 let name = name_builder.build();
