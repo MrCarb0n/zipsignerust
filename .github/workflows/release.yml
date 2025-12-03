@@ -101,7 +101,7 @@ jobs:
           name: ${{ matrix.output_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
-  # This final job creates the GitHub Release after all builds are complete.
+  # This final job updates the GitHub Release after all builds are complete.
   release:
     name: Update Release
     needs: build
@@ -115,46 +115,20 @@ jobs:
         with:
           path: release-artifacts
 
-      # DEFINITIVE FIX: Use a different action designed to handle asset updates reliably.
+      # DEFINITIVE FIX: Delete and recreate the 'latest' release in a single, atomic command.
       - name: Create Release
-        uses: ncipollo/release-action@v1
-        with:
-          # The tag for the release.
-          tag: "latest"
-          # The name of the release.
-          name: "Latest Development Build"
-          # The body of the release.
-          body: |
-            Automated build from commit `${{ github.sha }}` on the `master` branch.
+        run: |
+          # Delete the old 'latest' release to avoid conflicts.
+          gh release delete latest --yes || true
 
-            ---
-
-            ### 📦 Downloads
-
-            Choose the binary for your platform:
-
-            | Platform | Binary |
-            | :--- | :--- |
-            | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-linux-x64) |
-            | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-windows-x64.exe) |
-            | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/latest/download/zipsignerust-android-arm64) |
-
-            ---
-
-            ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
-          # This makes the release a "pre-release".
-          prerelease: true
-          # This is the magic setting: it removes old assets before uploading new ones.
-          removeArtifacts: true
-          # This replaces the release if it already exists.
-          allowUpdates: true
-          # Set the release as the "latest" release.
-          makeLatest: true
-          # The files to upload.
-          artifacts: |
-            release-artifacts/zipsignerust-linux-x64/zipsignerust
-            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe
+          # Create the new 'latest' release and upload all assets in one command.
+          gh release create latest \
+            --title "Latest Development Build" \
+            --prerelease \
+            --latest \
+            --notes "Automated build from commit ${{ github.sha }} on the \`master\` branch." \
+            release-artifacts/zipsignerust-linux-x64/zipsignerust \
+            release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe \
             release-artifacts/zipsignerust-android-arm64/zipsignerust
         env:
-          # This is the standard token for the action to authenticate.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
