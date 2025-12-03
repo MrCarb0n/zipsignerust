@@ -126,8 +126,20 @@ jobs:
           # Download all artifacts into a directory
           path: release-artifacts
 
+      # NEW STEP: Delete the existing 'latest' release to ensure a clean state.
+      - name: Delete existing 'latest' release
+        run: |
+          if gh release view latest > /dev/null 2>&1; then
+            echo "Release 'latest' found. Deleting it..."
+            gh release delete latest --yes
+          else
+            echo "Release 'latest' not found. Proceeding with creation."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # Update the 'latest' pre-release with the new binaries.
-      - name: Update Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "latest"
@@ -154,7 +166,7 @@ jobs:
 
             ⚠️ **Note:** This is a development build and includes a public test certificate. For production, you **must** use your own private signing keys.
           prerelease: true
-          # FIX: Corrected the file paths to point to the actual filenames inside the artifact directories.
+          # The files to upload as release assets
           files: |
             release-artifacts/zipsignerust-linux-x64/zipsignerust
             release-artifacts/zipsignerust-windows-x64.exe/zipsignerust.exe
