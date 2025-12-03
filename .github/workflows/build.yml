@@ -9,13 +9,11 @@ on:
   push:
     branches:
       - master
+    tags:
+      - "v*.*.*"
   pull_request:
     branches:
       - master
-  # Trigger on version tags for releases
-  push:
-    tags:
-      - 'v*.*.*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -131,42 +129,42 @@ jobs:
           # The body of the release, with all the fancy branding
           body: |
             ## 🚀 ${{ github.event.repository.name }} ${{ github.ref_name }}
-            
+
             A high-performance, secure, and cross-platform command-line tool for signing ZIP, JAR, and APK files, written in Rust.
-            
+
             **Author:** Tiash H Kabir (@MrCarb0n)
-            
+
             ---
-            
+
             ### ✨ What's Changed
             ${{ github.event.head_commit.message }}
-            
+
             ---
-            
+
             ### 📦 Downloads
-            
+
             Choose the binary for your platform:
-            
+
             | Platform | Binary |
             | :--- | :--- |
             | **Linux x64** | `zipsignerust-linux-x64` |
             | **Windows x64** | `zipsignerust-windows-x64.exe` |
             | **Android ARM64** | `zipsignerust-android-arm64` |
-            
+
             ---
-            
+
             ### 🛠️ How to Use
-            
+
             1.  Download the correct binary for your system.
             2.  Make it executable (on Linux/macOS): `chmod +x zipsignerust-linux-x64`
             3.  Sign your file! (This example uses the included test keys)
                 ```bash
-                ./zipsignerust-linux-x64 my-app.apk
+                ./zipsignerust-linux-x64 my-file.zip
                 ```
             *For more advanced usage, see the [project README](https://github.com/MrCarb0n/zipsignerust#readme).*
-            
+
             ---
-            
+
             ⚠️ **Note:** This release includes a public test certificate for convenience. For production, you **must** use your own private signing keys.
           # Automatically mark as a pre-release if the tag contains alpha, beta, or rc
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
