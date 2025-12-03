@@ -126,12 +126,13 @@ jobs:
           # Download all artifacts into a directory
           path: release-artifacts
 
-      # Update the 'latest' pre-release with the new binaries
+      # Update the 'latest' pre-release with the new binaries.
       - name: Update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "latest"
           name: "Latest Development Build"
+          # The body is updated with the latest commit SHA and direct download links
           body: |
             Automated build from the latest commit on the `master` branch.
 
@@ -145,9 +146,9 @@ jobs:
 
             | Platform | Binary |
             | :--- | :--- |
-            | **Linux x64** | `zipsignerust-linux-x64` |
-            | **Windows x64** | `zipsignerust-windows-x64.exe` |
-            | **Android ARM64** | `zipsignerust-android-arm64` |
+            | **Linux x64** | [zipsignerust-linux-x64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-linux-x64) |
+            | **Windows x64** | [zipsignerust-windows-x64.exe](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-windows-x64.exe) |
+            | **Android ARM64** | [zipsignerust-android-arm64](https://github.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/releases/download/latest/zipsignerust-android-arm64) |
 
             ---
 
