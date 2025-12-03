@@ -1,0 +1,73 @@
+name: Build & Release
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"] # Triggers release when you push a tag like v2.0
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # Needed to create releases
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_and_release:
+    name: Compile & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 1. Install Windows Cross-Compiler (MinGW)
+      - name: Install MinGW (Windows support)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      # 2. Setup Rust
+      - name: Setup Rust Toolchain
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+
+      # 3. Secure Keys (Assuming you set these in Repo Settings -> Secrets)
+      # If repo is private, you can skip this if files are committed.
+      - name: Restore Keys
+        if: ${{ env.PRIVATE_KEY != '' }}
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PUBLIC_KEY: ${{ secrets.PUBLIC_KEY }}
+        run: |
+          mkdir -p certs
+          echo "$PRIVATE_KEY" > certs/private_key.pem
+          echo "$PUBLIC_KEY" > certs/public_key.pem
+
+      # 4. Build All (Linux, Android, Windows)
+      - name: Run Build Script
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      # 5. Upload Artifacts (For commits)
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zipsigner-all-platforms
+          path: dist/
+
+      # 6. Create Release (Only on Tag)
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/zipsignerust-linux-x64
+            dist/zipsignerust-android-arm64
+            dist/zipsignerust-windows-x64.exe
+          draft: false
+          prerelease: false
