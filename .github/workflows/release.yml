@@ -1,0 +1,267 @@
+name: Automatic Latest Release
+
+on:
+    push:
+        branches: ["master"]
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+jobs:
+    build:
+        name: Build ${{ matrix.name }}
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - target: x86_64-unknown-linux-gnu
+                      os_package: ""
+                      name: linux-x64
+                    - target: aarch64-linux-android
+                      os_package: ""
+                      name: android-arm64
+                    - target: x86_64-pc-windows-gnu
+                      os_package: mingw-w64
+                      name: windows-x64
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Install Dependencies
+              if: matrix.os_package != ''
+              run: sudo apt-get update && sudo apt-get install -y ${{ matrix.os_package }}
+
+            - name: Setup Rust
+              run: |
+                  rustup update stable
+                  rustup target add ${{ matrix.target }}
+
+            - name: Install cargo-ndk
+              if: matrix.target == 'aarch64-linux-android'
+              run: cargo install cargo-ndk --locked
+
+            - name: Build Binary
+              shell: bash
+              run: |
+                  mkdir -p dist
+
+                  if [[ "${{ matrix.target }}" == "aarch64-linux-android" ]]; then
+                      echo "Building for Android ${{ matrix.target }}..."
+                      cargo ndk -t arm64-v8a --platform 24 build --release
+                      # cargo-ndk outputs to target/aarch64-linux-android/release/lib... or bin
+                      # For binaries, it is in target/aarch64-linux-android/release/
+                      cp "target/${{ matrix.target }}/release/zipsignerust" "dist/zipsignerust-${{ matrix.name }}"
+                  else
+                      echo "Building for ${{ matrix.target }}..."
+                      cargo build --release --target ${{ matrix.target }}
+                      
+                      BINARY_NAME="zipsignerust"
+                      OUTPUT_NAME="zipsignerust-${{ matrix.name }}"
+                      
+                      if [[ "${{ matrix.target }}" == *"windows"* ]]; then 
+                          BINARY_NAME="${BINARY_NAME}.exe"
+                          OUTPUT_NAME="${OUTPUT_NAME}.exe"
+                      fi
+                      
+                      cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "dist/${OUTPUT_NAME}"
+                  fi
+
+                  ls -lh dist/
+
+            - name: Upload Artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: binary-${{ matrix.name }}
+                  path: dist/*
+                  if-no-files-found: error
+
+    release:
+        name: Update Latest Release
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Download All Artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: all_dist
+                  pattern: binary-*
+                  merge-multiple: true
+
+            - name: Delete All Caches
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  echo "Fetching all caches..."
+                  CACHES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/actions/caches")
+
+                  CACHE_COUNT=$(echo "$CACHES" | jq '.actions_caches | length')
+                  echo "Found $CACHE_COUNT caches to delete"
+
+                  if [ "$CACHE_COUNT" -gt 0 ]; then
+                    echo "$CACHES" | jq -r '.actions_caches[].id' | while read -r CACHE_ID; do
+                        if [ -n "$CACHE_ID" ] && [ "$CACHE_ID" != "null" ]; then
+                            echo "Deleting cache ID: $CACHE_ID"
+                            curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                              "https://api.github.com/repos/${{ github.repository }}/actions/caches/$CACHE_ID"
+                        fi
+                    done
+                  else
+                    echo "No caches found."
+                  fi
+
+            - name: Delete All Releases
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  echo "Fetching all releases..."
+                  RELEASES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/releases")
+
+                  RELEASE_COUNT=$(echo "$RELEASES" | jq '. | length')
+                  echo "Found $RELEASE_COUNT releases to delete"
+
+                  if [ "$RELEASE_COUNT" -gt 0 ]; then
+                    echo "$RELEASES" | jq -r '.[].id' | while read -r RELEASE_ID; do
+                      echo "Deleting release ID: $RELEASE_ID"
+                      curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                        "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+                    done
+                    echo "All releases deleted."
+                  else
+                    echo "No releases found to delete."
+                  fi
+
+            - name: Delete All Tags
+              run: |
+                  git fetch --tags
+                  TAGS=$(git tag -l)
+
+                  if [ -n "$TAGS" ]; then
+                    echo "Deleting all tags..."
+                    echo "$TAGS" | while read -r TAG; do
+                      if [[ "$TAG" == "${{ github.ref_name }}" ]]; then
+                        echo "Skipping current tag: $TAG"
+                        continue
+                      fi
+                      
+                      echo "Deleting tag: $TAG"
+                      git tag -d "$TAG"
+                      git push origin ":refs/tags/$TAG" || true
+                    done
+                    echo "All tags deleted."
+                  else
+                    echo "No tags found to delete."
+                  fi
+
+            - name: Configure Git for Tagging
+              if: github.ref == 'refs/heads/master'
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            - name: Create 'latest' Tag
+              if: github.ref == 'refs/heads/master'
+              run: |
+                  git tag -fa latest -m "Latest development build"
+                  git tag -fa release -m "Rolling release alias"
+                  git push origin latest -f
+                  git push origin release -f
+
+            - name: Generate Super-Fancy Release Notes
+              id: notes
+              run: |
+                  SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-8)
+                  DATE=$(date +'%Y-%m-%d %H:%M:%S UTC')
+                  DATE_BADGE=$(echo ${DATE// /%20})
+                  MSG=$(git log -10 --pretty=format:"- %s (%h)")
+                  # Hardcode Author for consistency
+                  AUTHOR_BADGE="Tiash%20%2F%20@MrCarb0n"
+                  AUTHOR_URL="https://github.com/MrCarb0n"
+
+                  # Rolling release configuration
+                  DL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest"
+                  TITLE_HEADER="**🚀 Automated Rolling Release**"
+
+                  WORKFLOW_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+                  if git rev-parse HEAD~1 >/dev/null 2>&1; then
+                    STATS=$(git diff --stat HEAD~1 HEAD)
+                  else
+                    STATS=$(git show --stat HEAD)
+                  fi
+
+                  # Group echo statements to generate the release notes in a single file
+                  {
+                    echo '<div align="center">'
+                    echo ""
+                    echo '```'
+                    echo ' _____ _     _____ _             _____         _   '
+                    echo '|__   |_|___|   __|_|___ ___ ___| __  |_ _ ___| |_ '
+                    echo '|   __| | . |__   | | . |   | -_|    -| | |_ -|  _|'
+                    echo '|_____|_|  _|_____|_|_  |_|_|___|__|__|___|___|_|  '
+                    echo '        |_|         |___|                          '
+                    echo '```'
+                    echo ""
+                    echo "[![Build Date](https://img.shields.io/badge/Date-${DATE_BADGE}-blue)](${WORKFLOW_URL}) [![Commit](https://img.shields.io/badge/Commit-${SHORT_SHA}-informational)](${WORKFLOW_URL}) [![Author](https://img.shields.io/badge/Author-${AUTHOR_BADGE}-success)](${AUTHOR_URL})"
+                    echo '</div>'
+                    echo ""
+                    echo "## 📋 Summary of Changes"
+                    echo '```'
+                    
+                    echo "$MSG"
+                    
+                    echo '```'
+                    echo ""
+                    echo "## 📊 Code Impact"
+                    echo '```diff'
+                    echo "${STATS}"
+                    echo '```'
+                    echo ""
+                    echo "## 📦 Artifacts"
+                    echo "| Platform | Architecture | File | Size |"
+                    echo "| :--- | :--- | :--- | :--- |"
+
+                    for f in all_dist/*; do
+                      SIZE=$(du -h "$f" | cut -f1)
+                      FILE=$(basename "$f")
+                      case "$FILE" in
+                        *linux*) PLATFORM="🐧 Linux"; ARCH="x86_64";;
+                        *android*) PLATFORM="🤖 Android"; ARCH="ARM64";;
+                        *windows*) PLATFORM="🪟 Windows"; ARCH="x86_64";;
+                        *) PLATFORM="Unknown"; ARCH="Unknown";;
+                      esac
+                      echo "| $PLATFORM | $ARCH | [$FILE]($DL_URL/$FILE) | $SIZE |"
+                    done
+                    
+                    echo ""
+                    echo '<div align="center">'
+                    echo ""
+                    echo "$TITLE_HEADER"
+                    echo ""
+                    echo '</div>'
+                  } > release_notes.md
+
+            - name: Publish "Latest" Rolling Release
+              uses: softprops/action-gh-release@v2
+              if: github.ref == 'refs/heads/master'
+              with:
+                  tag_name: latest
+                  name: "Latest Rolling Release"
+                  body_path: release_notes.md
+                  files: |
+                      all_dist/*
+                  prerelease: false
+                  draft: false
+                  make_latest: true

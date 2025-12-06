@@ -1,0 +1,8 @@
+# .gitignore
+/dist/
+/target/
+Cargo.lock
+# Personal / Dev scripts
+build.sh
+key.sh
+certs/
