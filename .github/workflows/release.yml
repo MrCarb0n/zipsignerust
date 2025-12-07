@@ -3,6 +3,7 @@ name: Automatic Latest Release
 on:
     push:
         branches: ["master"]
+        tags: ["v*", "latest", "*.*.*"]
     workflow_dispatch:
 
 permissions:
@@ -52,21 +53,19 @@ jobs:
                   if [[ "${{ matrix.target }}" == "aarch64-linux-android" ]]; then
                       echo "Building for Android ${{ matrix.target }}..."
                       cargo ndk -t arm64-v8a --platform 24 build --release
-                      # cargo-ndk outputs to target/aarch64-linux-android/release/lib... or bin
-                      # For binaries, it is in target/aarch64-linux-android/release/
                       cp "target/${{ matrix.target }}/release/zipsignerust" "dist/zipsignerust-${{ matrix.name }}"
                   else
                       echo "Building for ${{ matrix.target }}..."
                       cargo build --release --target ${{ matrix.target }}
-                      
+
                       BINARY_NAME="zipsignerust"
                       OUTPUT_NAME="zipsignerust-${{ matrix.name }}"
-                      
-                      if [[ "${{ matrix.target }}" == *"windows"* ]]; then 
+
+                      if [[ "${{ matrix.target }}" == *"windows"* ]]; then
                           BINARY_NAME="${BINARY_NAME}.exe"
                           OUTPUT_NAME="${OUTPUT_NAME}.exe"
                       fi
-                      
+
                       cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "dist/${OUTPUT_NAME}"
                   fi
 
@@ -80,7 +79,7 @@ jobs:
                   if-no-files-found: error
 
     release:
-        name: Update Latest Release
+        name: Create Release
         needs: build
         runs-on: ubuntu-latest
         permissions:
@@ -98,102 +97,98 @@ jobs:
                   pattern: binary-*
                   merge-multiple: true
 
-            - name: Delete All Caches
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: Determine Release Type
+              id: release_type
               run: |
-                  echo "Fetching all caches..."
-                  CACHES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                    "https://api.github.com/repos/${{ github.repository }}/actions/caches")
-
-                  CACHE_COUNT=$(echo "$CACHES" | jq '.actions_caches | length')
-                  echo "Found $CACHE_COUNT caches to delete"
-
-                  if [ "$CACHE_COUNT" -gt 0 ]; then
-                    echo "$CACHES" | jq -r '.actions_caches[].id' | while read -r CACHE_ID; do
-                        if [ -n "$CACHE_ID" ] && [ "$CACHE_ID" != "null" ]; then
-                            echo "Deleting cache ID: $CACHE_ID"
-                            curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-                              "https://api.github.com/repos/${{ github.repository }}/actions/caches/$CACHE_ID"
-                        fi
-                    done
+                  if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+                      echo "type=rolling" >> $GITHUB_OUTPUT
+                      echo "tag_name=latest" >> $GITHUB_OUTPUT
+                      echo "release_name=Latest Rolling Release" >> $GITHUB_OUTPUT
+                  elif [[ "${{ github.ref }}" == "refs/tags/latest" ]]; then
+                      echo "type=rolling" >> $GITHUB_OUTPUT
+                      echo "tag_name=latest" >> $GITHUB_OUTPUT
+                      echo "release_name=Latest Rolling Release" >> $GITHUB_OUTPUT
                   else
-                    echo "No caches found."
+                      echo "type=versioned" >> $GITHUB_OUTPUT
+                      echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+                      echo "release_name=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
                   fi
 
-            - name: Delete All Releases
+            - name: Delete Existing 'latest' Release (if rolling)
+              if: steps.release_type.outputs.type == 'rolling'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  echo "Fetching all releases..."
-                  RELEASES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                    "https://api.github.com/repos/${{ github.repository }}/releases")
+                  echo "Checking for existing 'latest' release..."
+                  RELEASE_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/releases/tags/latest")
 
-                  RELEASE_COUNT=$(echo "$RELEASES" | jq '. | length')
-                  echo "Found $RELEASE_COUNT releases to delete"
+                  RELEASE_ID=$(echo "$RELEASE_DATA" | jq -r '.id // empty')
 
-                  if [ "$RELEASE_COUNT" -gt 0 ]; then
-                    echo "$RELEASES" | jq -r '.[].id' | while read -r RELEASE_ID; do
-                      echo "Deleting release ID: $RELEASE_ID"
+                  if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+                      echo "Found existing release with ID: $RELEASE_ID. Deleting..."
                       curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
                         "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
-                    done
-                    echo "All releases deleted."
+                      echo "Existing release deleted."
                   else
-                    echo "No releases found to delete."
+                      echo "No existing 'latest' release found."
                   fi
 
-            - name: Delete All Tags
-              run: |
-                  git fetch --tags
-                  TAGS=$(git tag -l)
-
-                  if [ -n "$TAGS" ]; then
-                    echo "Deleting all tags..."
-                    echo "$TAGS" | while read -r TAG; do
-                      if [[ "$TAG" == "${{ github.ref_name }}" ]]; then
-                        echo "Skipping current tag: $TAG"
-                        continue
-                      fi
-                      
-                      echo "Deleting tag: $TAG"
-                      git tag -d "$TAG"
-                      git push origin ":refs/tags/$TAG" || true
-                    done
-                    echo "All tags deleted."
-                  else
-                    echo "No tags found to delete."
-                  fi
-
-            - name: Create 'latest' Tag for Release
-              if: github.ref == 'refs/heads/master'
+            - name: Create 'latest' Tag for Rolling Release
+              if: steps.release_type.outputs.type == 'rolling'
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Delete the existing tag locally and remotely
+                  git tag -d latest 2>/dev/null || true
+                  git push origin :refs/tags/latest 2>/dev/null || true
+
+                  # Create and push the new tag
                   git tag -fa latest -m "Latest rolling release"
                   git push origin latest -f
 
-            - name: Generate Super-Fancy Release Notes
+            - name: Generate Release Notes
               id: notes
               run: |
                   SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-8)
                   DATE=$(date +'%Y-%m-%d %H:%M:%S UTC')
                   DATE_BADGE=$(echo ${DATE// /%20})
-                  MSG=$(git log -10 --pretty=format:"- %s (%h)")
+
+                  # Get appropriate commit history based on release type
+                  if [[ "${{ steps.release_type.outputs.type }}" == "versioned" ]]; then
+                      # For versioned releases, get changes since the last tag
+                      PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+                      if [ -n "$PREV_TAG" ]; then
+                          MSG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
+                          STATS=$(git diff --stat $PREV_TAG..HEAD)
+                      else
+                          MSG=$(git log --pretty=format:"- %s (%h)")
+                          STATS=$(git show --stat HEAD)
+                      fi
+                  else
+                      # For rolling releases, get last 10 commits
+                      MSG=$(git log -10 --pretty=format:"- %s (%h)")
+                      if git rev-parse HEAD~1 >/dev/null 2>&1; then
+                          STATS=$(git diff --stat HEAD~1 HEAD)
+                      else
+                          STATS=$(git show --stat HEAD)
+                      fi
+                  fi
+
                   # Hardcode Author for consistency
                   AUTHOR_BADGE="Tiash%20%2F%20@MrCarb0n"
                   AUTHOR_URL="https://github.com/MrCarb0n"
 
-                  # Rolling release configuration
-                  DL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/latest"
-                  TITLE_HEADER="**🚀 Automated Rolling Release**"
-
+                  # Release configuration
+                  DL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.release_type.outputs.tag_name }}"
                   WORKFLOW_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-                  if git rev-parse HEAD~1 >/dev/null 2>&1; then
-                    STATS=$(git diff --stat HEAD~1 HEAD)
+                  # Different headers for different release types
+                  if [[ "${{ steps.release_type.outputs.type }}" == "versioned" ]]; then
+                      TITLE_HEADER="**📦 Version ${{ steps.release_type.outputs.tag_name }} Release**"
                   else
-                    STATS=$(git show --stat HEAD)
+                      TITLE_HEADER="**🚀 Automated Rolling Release**"
                   fi
 
                   # Group echo statements to generate the release notes in a single file
@@ -213,9 +208,9 @@ jobs:
                     echo ""
                     echo "## 📋 Summary of Changes"
                     echo '```'
-                    
+
                     echo "$MSG"
-                    
+
                     echo '```'
                     echo ""
                     echo "## 📊 Code Impact"
@@ -238,7 +233,7 @@ jobs:
                       esac
                       echo "| $PLATFORM | $ARCH | [$FILE]($DL_URL/$FILE) | $SIZE |"
                     done
-                    
+
                     echo ""
                     echo '<div align="center">'
                     echo ""
@@ -247,17 +242,17 @@ jobs:
                     echo '</div>'
                   } > release_notes.md
 
-            - name: Publish "Latest" Rolling Release
+            - name: Publish Release
               uses: softprops/action-gh-release@v2
-              if: github.ref == 'refs/heads/master'
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
-                  tag_name: latest
-                  name: "Latest Rolling Release"
+                  tag_name: ${{ steps.release_type.outputs.tag_name }}
+                  name: ${{ steps.release_type.outputs.release_name }}
                   body_path: release_notes.md
                   files: |
                       all_dist/*
                   prerelease: false
                   draft: false
                   make_latest: true
+                  replace_latest: true
