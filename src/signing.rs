@@ -35,6 +35,8 @@ const RSA_SIGNATURE_SCHEME: &dyn signature::RsaEncoding = &signature::RSA_PKCS1_
 const RSA_VERIFICATION_ALGORITHM: &'static dyn signature::VerificationAlgorithm =
     &signature::RSA_PKCS1_2048_8192_SHA256;
 
+/// Cryptographic engine for computing SHA-1 digests.
+/// Used for generating manifest and signature file hashes.
 pub struct CryptoEngine;
 
 impl CryptoEngine {
@@ -58,6 +60,8 @@ impl CryptoEngine {
     }
 }
 
+/// Container for RSA key pair and certificate metadata.
+/// Manages private/public keys and extracts timestamp from certificate.
 pub struct KeyChain {
     pub private_key: Option<RsaKeyPair>,
     pub public_key: Option<UnparsedPublicKey<Vec<u8>>>,
@@ -138,7 +142,10 @@ impl KeyChain {
     }
 }
 
+/// Processor for signing and packaging ZIP/APK/JAR archives.
 pub struct ArtifactProcessor;
+
+/// Contains computed digests and nested archive sources.
 pub struct NestedDigests {
     pub digests: BTreeMap<String, String>,
     pub nested_sources: BTreeMap<String, Vec<u8>>,
@@ -304,13 +311,11 @@ impl ArtifactProcessor {
 
                     // Stream nested_signed back into the parent writer
                     let mut nested_file = BufReader::new(File::open(&nested_signed)?);
-                    let mut hasher = Crc32::new();
                     loop {
                         let n = nested_file.read(&mut buf)?;
                         if n == 0 {
                             break;
                         }
-                        hasher.update(&buf[..n]);
                         writer.write_all(&buf[..n])?;
                     }
                 } else {
@@ -554,8 +559,12 @@ impl ArtifactProcessor {
 
 impl KeyChain {
     fn asn1_to_zip_datetime(asn1: ASN1Time) -> DateTime {
-        // Use the proper to_datetime() method instead of unreliable string parsing
+        // Convert to OffsetDateTime using x509-parser's logic
+        // This returns the certificate's timestamp in UTC
         let dt = asn1.to_datetime();
+        
+        // Extract components directly from the UTC timestamp
+        // This ensures we use the exact time from the certificate without timezone shifts
         let year = dt.year() as u16;
         let month = dt.month() as u8;
         let day = dt.day();
@@ -564,6 +573,12 @@ impl KeyChain {
         let second = dt.second();
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second)
-            .unwrap_or_else(|_| DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap())
+            .unwrap_or_else(|_| {
+                ui::log_error(&format!(
+                    "Failed to create DateTime from certificate date: {}-{:02}-{:02} {:02}:{:02}:{:02}. Fallback to 1980.",
+                    year, month, day, hour, minute, second
+                ));
+                DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+            })
     }
 }

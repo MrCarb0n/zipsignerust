@@ -150,7 +150,6 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             };
 
             ui::log_info("Generating signature and writing signed archive...");
-            let already_exists = config.output_path.exists();
             match signing::ArtifactProcessor::write_signed_zip_with_sources(
                 &working_input,
                 &config.output_path,
@@ -165,11 +164,6 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
                             "In-place signing complete. Original file preserved at `{}`.",
                             working_input.display()
                         ));
-                    } else if already_exists && !config.overwrite && !config.is_stdout {
-                        ui::log_warn(&format!(
-                            "Output file already exists: `{}`. Use --overwrite to proceed.",
-                            config.output_path.display()
-                        ));
                     } else if config.is_stdout {
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
@@ -183,15 +177,21 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
                 }
                 Err(e) => {
                     if inplace {
-                        if let Err(restore_err) =
-                            std::fs::rename(&working_input, &config.input_path)
-                        {
-                            ui::log_error(&format!(
-                                "CRITICAL: Failed to restore backup after error: {}",
-                                restore_err
-                            ));
-                        } else {
-                            ui::log_error_detail("Original file has been restored from backup.");
+                        match std::fs::rename(&working_input, &config.input_path) {
+                            Ok(_) => {
+                                ui::log_error_detail("Original file has been restored from backup.");
+                                return Err(e);
+                            }
+                            Err(restore_err) => {
+                                ui::log_error(&format!(
+                                    "CRITICAL: Failed to restore backup after error: {}",
+                                    restore_err
+                                ));
+                                return Err(SignerError::Config(format!(
+                                    "Signing failed AND backup restoration failed. Original error: {}. Restore error: {}. Backup location: {}",
+                                    e, restore_err, working_input.display()
+                                )));
+                            }
                         }
                     }
                     return Err(e);

@@ -14,6 +14,7 @@ use crate::{
     CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 
+/// Verifies RSA signatures on signed ZIP/APK/JAR archives.
 pub struct ArtifactVerifier;
 
 impl ArtifactVerifier {
@@ -25,25 +26,31 @@ impl ArtifactVerifier {
         let mut archive = ZipArchive::new(File::open(path)?)?;
 
         let mut signature_bytes = Vec::new();
-        if archive.by_name(CERT_RSA_NAME).is_err() {
-            return Err(SignerError::Validation("No RSA Signature file found".into()));
-        }
-        archive.by_name(CERT_RSA_NAME)?.read_to_end(&mut signature_bytes)?;
+        archive
+            .by_name(CERT_RSA_NAME)
+            .map_err(|e| SignerError::Validation(
+                format!("No RSA Signature file found ({}): {}", CERT_RSA_NAME, e)
+            ))?
+            .read_to_end(&mut signature_bytes)?;
 
         let mut sf_file_bytes = Vec::new();
-        if archive.by_name(CERT_SF_NAME).is_err() {
-            return Err(SignerError::Validation("No SF file found".into()));
-        }
-        archive.by_name(CERT_SF_NAME)?.read_to_end(&mut sf_file_bytes)?;
+        archive
+            .by_name(CERT_SF_NAME)
+            .map_err(|e| SignerError::Validation(
+                format!("No SF file found ({}): {}", CERT_SF_NAME, e)
+            ))?
+            .read_to_end(&mut sf_file_bytes)?;
 
         // Verification algorithm computes SHA-256 internally for RSA_PKCS1_SHA256
         public_key.verify(&sf_file_bytes, &signature_bytes)?;
 
         let mut manifest_bytes = Vec::new();
-        if archive.by_name(MANIFEST_NAME).is_err() {
-            return Err(SignerError::Validation("No Manifest file found".into()));
-        }
-        archive.by_name(MANIFEST_NAME)?.read_to_end(&mut manifest_bytes)?;
+        archive
+            .by_name(MANIFEST_NAME)
+            .map_err(|e| SignerError::Validation(
+                format!("No Manifest file found ({}): {}", MANIFEST_NAME, e)
+            ))?
+            .read_to_end(&mut manifest_bytes)?;
 
         let manifest_hash = CryptoEngine::compute_sha1(&manifest_bytes);
         let sf_content = String::from_utf8_lossy(&sf_file_bytes);

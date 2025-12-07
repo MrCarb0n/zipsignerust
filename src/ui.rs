@@ -7,11 +7,17 @@
 use crate::{error::SignerError, APP_NAME, APP_VERSION};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// ANSI Color Codes
+const COLOR_RED: &str = "31";
+const COLOR_GREEN: &str = "32";
+const COLOR_YELLOW: &str = "33";
+const COLOR_BLUE: &str = "34";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
-    Error = 1,
-    Warn = 2,
-    Info = 3,
+    Error,
+    Warn,
+    Info,
 }
 
 // Simplified output: text only
@@ -87,31 +93,31 @@ pub fn print_mode_header(title: &str) {
 
 pub fn log_info(msg: &str) {
     if enabled(LogLevel::Info, false, false) {
-        paint("INFO", msg, "34", false);
+        paint("INFO", msg, COLOR_BLUE, false);
     }
 }
 
 pub fn log_success(msg: &str) {
     if enabled(LogLevel::Info, false, true) {
-        paint("OK", msg, "32", false);
+        paint("OK", msg, COLOR_GREEN, false);
     }
 }
 
 pub fn log_warn(msg: &str) {
     if enabled(LogLevel::Warn, false, false) {
-        paint("WARN", msg, "33", false);
+        paint("WARN", msg, COLOR_YELLOW, false);
     }
 }
 
 pub fn log_error(msg: &str) {
     if enabled(LogLevel::Error, true, false) {
-        paint("ERROR", msg, "31", true);
+        paint("ERROR", msg, COLOR_RED, true);
     }
 }
 
 pub fn log_error_detail(msg: &str) {
     if enabled(LogLevel::Error, true, false) {
-        paint("DETAIL", msg, "31", true);
+        paint("DETAIL", msg, COLOR_RED, true);
     }
 }
 
@@ -130,5 +136,5 @@ pub fn set_colors(c: bool) {
 }
 
 pub fn log_structured_error(err: &SignerError) {
-    paint("ERROR", &err.to_string(), "31", true);
+    paint("ERROR", &err.to_string(), COLOR_RED, true);
 }

@@ -77,7 +77,12 @@ impl Config {
             is_stdout = true;
             PathBuf::from("stdout")
         } else {
-            let stem = input_path.file_stem().unwrap().to_str().unwrap();
+            let stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| SignerError::Config(
+                    format!("Invalid filename (no stem or non-UTF8): {}", input_path.display())
+                ))?;
             input_path.with_file_name(format!("{}_signed.zip", stem))
         };
 
