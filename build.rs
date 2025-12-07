@@ -5,6 +5,9 @@ fn main() {
     let certs_dir = PathBuf::from("certs");
     let priv_path = certs_dir.join("private_key.pem");
     let pub_path = certs_dir.join("public_cert.pem");
+    println!("cargo:rustc-check-cfg=cfg(has_merged_keys)");
+    println!("cargo:rerun-if-changed={}", priv_path.display());
+    println!("cargo:rerun-if-changed={}", pub_path.display());
     if priv_path.exists() && pub_path.exists() {
         let priv_contents = fs::read_to_string(&priv_path).unwrap();
         let pub_contents = fs::read_to_string(&pub_path).unwrap();
