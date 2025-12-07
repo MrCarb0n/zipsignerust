@@ -78,6 +78,9 @@ impl KeyChain {
                 .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))
                 .ok()
         } else {
+            #[cfg(has_merged_keys)]
+            let pem = pem_crate::parse(crate::merged_keys::PRIVATE_KEY.as_bytes())?;
+            #[cfg(not(has_merged_keys))]
             let pem = pem_crate::parse(crate::default_keys::PRIVATE_KEY.as_bytes())?;
             RsaKeyPair::from_pkcs8(&pem.contents)
                 .map_err(|e| SignerError::Config(format!("Invalid Default Private Key: {}", e)))
@@ -95,6 +98,9 @@ impl KeyChain {
             let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
             (Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)), nb)
         } else {
+            #[cfg(has_merged_keys)]
+            let pem = pem_crate::parse(crate::merged_keys::PUBLIC_KEY.as_bytes())?;
+            #[cfg(not(has_merged_keys))]
             let pem = pem_crate::parse(crate::default_keys::PUBLIC_KEY.as_bytes())?;
             let der = pem.contents;
             let cert = X509Certificate::from_der(&der)
@@ -562,7 +568,7 @@ impl KeyChain {
         // Convert to OffsetDateTime using x509-parser's logic
         // This returns the certificate's timestamp in UTC
         let dt = asn1.to_datetime();
-        
+
         // Extract components directly from the UTC timestamp
         // This ensures we use the exact time from the certificate without timezone shifts
         let year = dt.year() as u16;

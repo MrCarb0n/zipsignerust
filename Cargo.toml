@@ -10,6 +10,7 @@ readme = "README.md"
 keywords = ["android", "apk", "signing", "jar", "zip"]
 categories = ["command-line-utilities", "cryptography"]
 rust-version = "1.70"
+build = "build.rs"
 
 [[bin]]
 name = "zipsignerust"

@@ -21,6 +21,11 @@ pub mod verification;
 // HARDCODED KEYS MODULE (can be overridden by build-time merged keys via cfg)
 pub mod default_keys;
 
+#[cfg(has_merged_keys)]
+pub mod merged_keys {
+    include!(concat!(env!("OUT_DIR"), "/merged_keys.rs"));
+}
+
 // --- Shared Constants ---
 pub const APP_NAME: &str = "ZipSignerust";
 pub const APP_BIN_NAME: &str = "zipsignerust";
