@@ -165,6 +165,14 @@ jobs:
                     echo "No tags found to delete."
                   fi
 
+            - name: Create 'latest' Tag for Release
+              if: github.ref == 'refs/heads/master'
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git tag -fa latest -m "Latest rolling release"
+                  git push origin latest -f
+
             - name: Generate Super-Fancy Release Notes
               id: notes
               run: |
