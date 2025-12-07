@@ -250,6 +250,8 @@ jobs:
             - name: Publish "Latest" Rolling Release
               uses: softprops/action-gh-release@v2
               if: github.ref == 'refs/heads/master'
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
                   tag_name: latest
                   name: "Latest Rolling Release"
