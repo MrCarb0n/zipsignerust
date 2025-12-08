@@ -1,147 +1,142 @@
 name: Automatic Latest Release
 
 on:
-  push:
-    branches: ["master"]
-    tags: ["v*", "latest", "*.*.*"]
-  workflow_dispatch:
+    push:
+        branches: ["master"]
+        tags: ["v*", "latest", "*.*.*"]
+    workflow_dispatch:
 
 permissions:
-  contents: write
+    contents: write
 
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os_package: ""
-            name: linux-x64
-          - target: aarch64-linux-android
-            os_package: ""
-            name: android-arm64
-          - target: x86_64-pc-windows-gnu
-            os_package: mingw-w64
-            name: windows-x64
+    build:
+        name: Build ${{ matrix.name }}
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - target: x86_64-unknown-linux-gnu
+                      name: linux-x64
+                    - target: aarch64-linux-android
+                      name: android-arm64
+                    - target: x86_64-pc-windows-gnu
+                      name: windows-x64
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
-      - name: Install Dependencies
-        if: matrix.os_package != ''
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.os_package }}
+            - name: Setup Rust
+              run: |
+                  rustup update stable
+                  rustup target add ${{ matrix.target }}
 
-      - name: Setup Rust
-        run: |
-          rustup update stable
-          rustup target add ${{ matrix.target }}
+            - name: Install Android NDK
+              if: matrix.target == 'aarch64-linux-android'
+              run: cargo install cargo-ndk --locked
 
-      - name: Install cargo-ndk
-        if: matrix.target == 'aarch64-linux-android'
-        run: cargo install cargo-ndk --locked
+            - name: Install MinGW (Windows)
+              if: matrix.target == 'x86_64-pc-windows-gnu'
+              run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
-      - name: Build Binary
-        shell: bash
-        run: |
-          mkdir -p dist
+            - name: Build Binary
+              shell: bash
+              run: |
+                  mkdir -p dist
+                  BIN_NAME="zipsignerust"
+                  OUT_NAME="zipsignerust-${{ matrix.name }}"
 
-          if [[ "${{ matrix.target }}" == "aarch64-linux-android" ]]; then
-              echo "Building for Android ${{ matrix.target }}..."
-              cargo ndk -t arm64-v8a --platform 24 build --release
-              cp "target/${{ matrix.target }}/release/zipsignerust" "dist/zipsignerust-${{ matrix.name }}"
-          else
-              echo "Building for ${{ matrix.target }}..."
-              cargo build --release --target ${{ matrix.target }}
+                  if [[ "${{ matrix.target }}" == "aarch64-linux-android" ]]; then
+                      cargo ndk -t arm64-v8a --platform 24 build --release
+                      cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${OUT_NAME}"
+                  else
+                      cargo build --release --target ${{ matrix.target }}
+                      # Handle Windows .exe extension
+                      if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+                          BIN_NAME="${BIN_NAME}.exe"
+                          OUT_NAME="${OUT_NAME}.exe"
+                      fi
+                      cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${OUT_NAME}"
+                  fi
 
-              BINARY_NAME="zipsignerust"
-              OUTPUT_NAME="zipsignerust-${{ matrix.name }}"
+            - name: Upload Artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: binary-${{ matrix.name }}
+                  path: dist/*
+                  if-no-files-found: error
 
-              if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-                  BINARY_NAME="${BINARY_NAME}.exe"
-                  OUTPUT_NAME="${OUTPUT_NAME}.exe"
-              fi
+    release:
+        name: Publish Release
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
 
-              cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "dist/${OUTPUT_NAME}"
-          fi
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.name }}
-          path: dist/*
-          if-no-files-found: error
+            - name: Download Artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: all_dist
+                  pattern: binary-*
+                  merge-multiple: true
 
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+            - name: Determine Release Type
+              id: release_type
+              run: |
+                  if [[ "${{ github.ref }}" == "refs/heads/master" ]] || [[ "${{ github.ref }}" == "refs/tags/latest" ]]; then
+                      echo "type=rolling" >> $GITHUB_OUTPUT
+                      echo "tag_name=latest" >> $GITHUB_OUTPUT
+                      echo "title=🚀 Latest Rolling Release" >> $GITHUB_OUTPUT
+                  else
+                      echo "type=versioned" >> $GITHUB_OUTPUT
+                      echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+                      echo "title=📦 Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+                  fi
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+            - name: Generate Release Notes
+              id: notes
+              run: |
+                  chmod +x .github/scripts/gen_notes.sh
 
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all_dist
-          pattern: binary-*
-          merge-multiple: true
+                  # Call the script to generate markdown
+                  ./.github/scripts/gen_notes.sh \
+                    "${{ steps.release_type.outputs.type }}" \
+                    "${{ steps.release_type.outputs.tag_name }}" \
+                    "${{ github.repository }}" \
+                    "${{ github.run_id }}" \
+                    "${{ github.sha }}" > release_notes.md
 
-      - name: Determine Release Type
-        id: release_type
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/master" ]] || [[ "${{ github.ref }}" == "refs/tags/latest" ]]; then
-              echo "type=rolling" >> $GITHUB_OUTPUT
-              echo "tag_name=latest" >> $GITHUB_OUTPUT
-              echo "release_name=Latest Rolling Release" >> $GITHUB_OUTPUT
-          else
-              echo "type=versioned" >> $GITHUB_OUTPUT
-              echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-              echo "release_name=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          fi
+            - name: Publish via GitHub CLI
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ steps.release_type.outputs.tag_name }}
+                  TITLE: ${{ steps.release_type.outputs.title }}
+              run: |
+                  echo "::group::Cleanup Old Release"
+                  # Force delete old 'latest' release/tag synchronously
+                  if [[ "$TAG" == "latest" ]]; then
+                    gh release delete latest --cleanup-tag --yes || true
+                    git push origin :refs/tags/latest || true
+                    sleep 2
+                  fi
+                  echo "::endgroup::"
 
-      - name: Prepare Rolling Release
-        if: steps.release_type.outputs.type == 'rolling'
-        run: |
-          chmod +x .github/scripts/prepare_rolling.sh
-          ./.github/scripts/prepare_rolling.sh \
-            "${{ steps.release_type.outputs.type }}" \
-            "${{ github.repository }}" \
-            "${{ secrets.GITHUB_TOKEN }}"
+                  echo "::group::Create New Release"
+                  gh release create "$TAG" all_dist/* \
+                    --target ${{ github.sha }} \
+                    --title "$TITLE" \
+                    --notes-file release_notes.md \
+                    --latest \
+                    --verify-tag
+                  echo "::endgroup::"
 
-      - name: Generate Release Notes
-        id: notes
-        run: |
-          chmod +x .github/scripts/gen_notes.sh
-          ./.github/scripts/gen_notes.sh \
-            "${{ steps.release_type.outputs.type }}" \
-            "${{ steps.release_type.outputs.tag_name }}" \
-            "${{ github.repository }}" \
-            "${{ github.run_id }}" \
-            "${{ github.sha }}" > release_notes.md
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.release_type.outputs.tag_name }}
-          name: ${{ steps.release_type.outputs.release_name }}
-          body_path: release_notes.md
-          files: all_dist/*
-          target_commitish: ${{ github.sha }} # This forces the tag to move to the NEW commit
-          make_latest: true
-          overwrite_files: true
-          fail_on_unmatched_files: true
-
-      - name: Release URL
-        run: |
-          echo "::notice::🎉 Release ready at https://github.com/${{ github.repository }}/releases/latest"
+            - name: Release URL
+              run: echo "::notice::🎉 Release ready at https://github.com/${{ github.repository }}/releases/latest"

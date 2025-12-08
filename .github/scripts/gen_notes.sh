@@ -1,30 +1,41 @@
 #!/bin/bash
 set -euo pipefail
 
+# ------------------------------------------------------------------------------
+# Script: gen_notes.sh
+# Description: Generates a Markdown changelog and artifact table.
+# ------------------------------------------------------------------------------
+
 RELEASE_TYPE="${1}"
 TAG_NAME="${2}"
 REPO_NAME="${3}"
 RUN_ID="${4}"
 SHA="${5}"
 
+# Metadata
 SHORT_SHA=$(echo "${SHA}" | cut -c1-8)
 DATE=$(date +'%Y-%m-%d %H:%M:%S UTC')
 DATE_BADGE="${DATE// /%20}"
 WORKFLOW_URL="https://github.com/${REPO_NAME}/actions/runs/${RUN_ID}"
 DL_BASE="https://github.com/${REPO_NAME}/releases/download/${TAG_NAME}"
 
+# 1. Determine Header and Git History context
 if [[ "${RELEASE_TYPE}" == "versioned" ]]; then
     TITLE_HEADER="**📦 Version ${TAG_NAME} Release**"
+
+    # Attempt to find the previous tag to generate a diff
     if PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null); then
         MSG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
         STATS=$(git diff --stat "${PREV_TAG}..HEAD")
     else
+        # Fallback if no previous tag exists
         MSG=$(git log --pretty=format:"- %s (%h)")
         STATS=$(git show --stat HEAD)
     fi
 else
     TITLE_HEADER="**🚀 Automated Rolling Release**"
     MSG=$(git log -10 --pretty=format:"- %s (%h)")
+
     if git rev-parse HEAD~1 >/dev/null 2>&1; then
         STATS=$(git diff --stat HEAD~1 HEAD)
     else
@@ -32,6 +43,7 @@ else
     fi
 fi
 
+# 2. Output Markdown
 cat <<EOF
 <div align="center">
 
@@ -62,10 +74,13 @@ ${STATS}
 | :--- | :--- | :--- | :--- |
 EOF
 
+# 3. Iterate over artifacts and append to table
+#    We assume the artifacts are located in 'all_dist/'
 for f in all_dist/*; do
     if [[ -f "$f" ]]; then
         FILENAME=$(basename "$f")
         SIZE=$(du -h "$f" | cut -f1)
+
         case "$FILENAME" in
         *linux*)
             PLATFORM="🐧 Linux"
@@ -84,6 +99,7 @@ for f in all_dist/*; do
             ARCH="Unknown"
             ;;
         esac
+
         echo "| ${PLATFORM} | ${ARCH} | [${FILENAME}](${DL_BASE}/${FILENAME}) | ${SIZE} |"
     fi
 done
