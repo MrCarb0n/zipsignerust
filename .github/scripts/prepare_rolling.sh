@@ -11,9 +11,9 @@ if [[ "${RELEASE_TYPE}" != "rolling" ]]; then
     exit 0
 fi
 
-echo "Cleaning up old release..."
+echo "🧹 Cleaning up old rolling release..."
 
-# Check if release exists
+# 1. Delete the Release (so GitHub doesn't get confused)
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${GITHUB_TOKEN}" \
     "https://api.github.com/repos/${REPO_NAME}/releases/tags/${TAG_NAME}")
 
@@ -26,15 +26,8 @@ if [[ "${HTTP_CODE}" == "200" ]]; then
         "https://api.github.com/repos/${REPO_NAME}/releases/${RELEASE_ID}"
 fi
 
-echo "Updating '${TAG_NAME}' tag..."
-git config user.name "github-actions[bot]"
-git config user.email "github-actions[bot]@users.noreply.github.com"
-
-# Delete remote tag to avoid conflicts
+# 2. Delete the Remote Tag (so the Action can recreate it on the NEW commit)
+echo "Deleting old remote tag '${TAG_NAME}'..."
 git push origin ":refs/tags/${TAG_NAME}" 2>/dev/null || true
 
-# Retag local HEAD
-git tag -fa "${TAG_NAME}" -m "Latest rolling release"
-
-# Push new tag
-git push origin "${TAG_NAME}" -f
+echo "✅ Clean up complete. Ready for new release creation."
