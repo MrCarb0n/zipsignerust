@@ -125,6 +125,7 @@ impl KeyChain {
         if let Some(dt) = &self.cert_not_before {
             return *dt;
         }
+        // Fallback to 1980-01-01 00:00:00 UTC
         DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
     }
 
@@ -255,7 +256,7 @@ impl ArtifactProcessor {
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
         ui::log_info(&format!(
-            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC)",
             timestamp.year(),
             timestamp.month(),
             timestamp.day(),
@@ -325,6 +326,7 @@ impl ArtifactProcessor {
                     let nested_digests = Self::compute_manifest_digests(&nested_src)?;
                     Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests)?;
 
+                    // Use UTC logic for filesystem timestamp
                     let ft =
                         FileTime::from_unix_time(Self::zip_datetime_to_unix(&timestamp) as i64, 0);
                     set_file_times(&nested_signed, ft, ft)?;
@@ -373,7 +375,7 @@ impl ArtifactProcessor {
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
         ui::log_info(&format!(
-            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC)",
             timestamp.year(),
             timestamp.month(),
             timestamp.day(),
@@ -559,6 +561,8 @@ impl ArtifactProcessor {
         let ndt = nd
             .and_hms_opt(dt.hour() as u32, dt.minute() as u32, dt.second() as u32)
             .unwrap_or_default();
+
+        // Ensure strictly UTC conversion
         ndt.and_utc().timestamp().max(0) as u64
     }
 }
@@ -566,6 +570,8 @@ impl ArtifactProcessor {
 impl KeyChain {
     fn asn1_to_zip_datetime(asn1: ASN1Time) -> DateTime {
         let dt = asn1.to_datetime();
+
+        // Force interpretation as UTC components directly
         let year = dt.year() as u16;
         let month = dt.month() as u8;
         let day = dt.day();
@@ -575,7 +581,7 @@ impl KeyChain {
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
             ui::log_error(&format!(
-                "Failed to create DateTime from certificate date. Fallback to 1980."
+                "Failed to create DateTime. Fallback to 1980-01-01 00:00:00 UTC."
             ));
             DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
         })
