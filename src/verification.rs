@@ -95,7 +95,8 @@ impl ArtifactVerifier {
             }
         }
 
-        for (name, _) in &manifest_entries {
+        // Fixed: Use .keys() for cleaner iteration
+        for name in manifest_entries.keys() {
             if !file_map.contains_key(name) {
                 return Err(SignerError::Validation(format!(
                     "Manifest references missing file {}", name
@@ -120,11 +121,12 @@ impl ArtifactVerifier {
     }
 
     fn unfold_lines(s: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new(); // <--- FIXED TYPE ANNOTATION HERE
+        let mut out: Vec<String> = Vec::new();
         for line in s.split("\r\n") {
             if let Some(last) = out.last_mut() {
-                if line.starts_with(' ') {
-                    last.push_str(&line[1..]);
+                // Fixed: Use strip_prefix instead of manual slice
+                if let Some(stripped) = line.strip_prefix(' ') {
+                    last.push_str(stripped);
                     continue;
                 }
             }
