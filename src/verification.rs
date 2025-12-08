@@ -120,7 +120,7 @@ impl ArtifactVerifier {
     }
 
     fn unfold_lines(s: &str) -> Vec<String> {
-        let mut out = Vec::new();
+        let mut out: Vec<String> = Vec::new(); // <--- FIXED TYPE ANNOTATION HERE
         for line in s.split("\r\n") {
             if let Some(last) = out.last_mut() {
                 if line.starts_with(' ') {
