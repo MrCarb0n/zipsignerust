@@ -21,26 +21,26 @@ DL_BASE="https://github.com/${REPO_NAME}/releases/download/${TAG_NAME}"
 
 # 1. Determine Header and Git History context
 if [[ "${RELEASE_TYPE}" == "versioned" ]]; then
-    TITLE_HEADER="**📦 Version ${TAG_NAME} Release**"
+	TITLE_HEADER="**📦 Version ${TAG_NAME} Release**"
 
-    # Attempt to find the previous tag to generate a diff
-    if PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null); then
-        MSG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
-        STATS=$(git diff --stat "${PREV_TAG}..HEAD")
-    else
-        # Fallback if no previous tag exists
-        MSG=$(git log --pretty=format:"- %s (%h)")
-        STATS=$(git show --stat HEAD)
-    fi
+	# Attempt to find the previous tag to generate a diff
+	if PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null); then
+		MSG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+		STATS=$(git diff --stat "${PREV_TAG}..HEAD")
+	else
+		# Fallback if no previous tag exists
+		MSG=$(git log --pretty=format:"- %s (%h)")
+		STATS=$(git show --stat HEAD)
+	fi
 else
-    TITLE_HEADER="**🚀 Automated Rolling Release**"
-    MSG=$(git log -10 --pretty=format:"- %s (%h)")
+	TITLE_HEADER="**🚀 Automated Rolling Release**"
+	MSG=$(git log -10 --pretty=format:"- %s (%h)")
 
-    if git rev-parse HEAD~1 >/dev/null 2>&1; then
-        STATS=$(git diff --stat HEAD~1 HEAD)
-    else
-        STATS=$(git show --stat HEAD)
-    fi
+	if git rev-parse HEAD~1 >/dev/null 2>&1; then
+		STATS=$(git diff --stat HEAD~1 HEAD)
+	else
+		STATS=$(git show --stat HEAD)
+	fi
 fi
 
 # 2. Output Markdown
@@ -48,11 +48,11 @@ cat <<EOF
 <div align="center">
 
 \`\`\`
- _____ _     _____ _             _____         _
-|__   |_|___|   __|_|___ ___ ___| __  |_ _ ___| |_
+ _____ _     _____ _             _____         _   
+|__   |_|___|   __|_|___ ___ ___| __  |_ _ ___| |_ 
 |   __| | . |__   | | . |   | -_|    -| | |_ -|  _|
-|_____|_|  _|_____|_|_  |_|_|___|__|__|___|___|_|
-        |_|         |___|
+|_____|_|  _|_____|_|_  |_|_|___|__|__|___|___|_|  
+        |_|         |___|                          
 \`\`\`
 
 [![Build Date](https://img.shields.io/badge/Date-${DATE_BADGE}-blue)](${WORKFLOW_URL}) [![Commit](https://img.shields.io/badge/Commit-${SHORT_SHA}-informational)](${WORKFLOW_URL})
@@ -77,31 +77,31 @@ EOF
 # 3. Iterate over artifacts and append to table
 #    We assume the artifacts are located in 'all_dist/'
 for f in all_dist/*; do
-    if [[ -f "$f" ]]; then
-        FILENAME=$(basename "$f")
-        SIZE=$(du -h "$f" | cut -f1)
+	if [[ -f "$f" ]]; then
+		FILENAME=$(basename "$f")
+		SIZE=$(du -h "$f" | cut -f1)
 
-        case "$FILENAME" in
-        *linux*)
-            PLATFORM="🐧 Linux"
-            ARCH="x86_64"
-            ;;
-        *android*)
-            PLATFORM="🤖 Android"
-            ARCH="ARM64"
-            ;;
-        *windows*)
-            PLATFORM="🪟 Windows"
-            ARCH="x86_64"
-            ;;
-        *)
-            PLATFORM="Unknown"
-            ARCH="Unknown"
-            ;;
-        esac
+		case "$FILENAME" in
+		*linux*)
+			PLATFORM="🐧 Linux"
+			ARCH="x86_64"
+			;;
+		*android*)
+			PLATFORM="🤖 Android"
+			ARCH="ARM64"
+			;;
+		*windows*)
+			PLATFORM="🪟 Windows"
+			ARCH="x86_64"
+			;;
+		*)
+			PLATFORM="Unknown"
+			ARCH="Unknown"
+			;;
+		esac
 
-        echo "| ${PLATFORM} | ${ARCH} | [${FILENAME}](${DL_BASE}/${FILENAME}) | ${SIZE} |"
-    fi
+		echo "| ${PLATFORM} | ${ARCH} | [${FILENAME}](${DL_BASE}/${FILENAME}) | ${SIZE} |"
+	fi
 done
 
 echo ""
