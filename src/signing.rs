@@ -78,9 +78,7 @@ impl KeyChain {
                 .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))
                 .ok()
         } else {
-            #[cfg(has_merged_keys)]
-            let pem = pem_crate::parse(crate::merged_keys::PRIVATE_KEY.as_bytes())?;
-            #[cfg(not(has_merged_keys))]
+            // Simplified: Always use default_keys if no path provided
             let pem = pem_crate::parse(crate::default_keys::PRIVATE_KEY.as_bytes())?;
             RsaKeyPair::from_pkcs8(&pem.contents)
                 .map_err(|e| SignerError::Config(format!("Invalid Default Private Key: {}", e)))
@@ -98,9 +96,7 @@ impl KeyChain {
             let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
             (Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)), nb)
         } else {
-            #[cfg(has_merged_keys)]
-            let pem = pem_crate::parse(crate::merged_keys::PUBLIC_KEY.as_bytes())?;
-            #[cfg(not(has_merged_keys))]
+            // Simplified: Always use default_keys if no path provided
             let pem = pem_crate::parse(crate::default_keys::PUBLIC_KEY.as_bytes())?;
             let der = pem.contents;
             let cert = X509Certificate::from_der(&der)
@@ -587,4 +583,6 @@ impl KeyChain {
                 DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
             })
     }
+}
+
 }
