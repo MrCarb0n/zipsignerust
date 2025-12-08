@@ -19,26 +19,28 @@ pub struct ArtifactVerifier;
 
 impl ArtifactVerifier {
     pub fn verify(path: &std::path::Path, keys: &KeyChain) -> Result<bool, SignerError> {
-        let public_key = keys
-            .public_key
-            .as_ref()
-            .ok_or(SignerError::Config("Public Key Missing for verification".into()))?;
+        let public_key = keys.public_key.as_ref().ok_or(SignerError::Config(
+            "Public Key Missing for verification".into(),
+        ))?;
         let mut archive = ZipArchive::new(File::open(path)?)?;
 
         let mut signature_bytes = Vec::new();
         archive
             .by_name(CERT_RSA_NAME)
-            .map_err(|e| SignerError::Validation(
-                format!("No RSA Signature file found ({}): {}", CERT_RSA_NAME, e)
-            ))?
+            .map_err(|e| {
+                SignerError::Validation(format!(
+                    "No RSA Signature file found ({}): {}",
+                    CERT_RSA_NAME, e
+                ))
+            })?
             .read_to_end(&mut signature_bytes)?;
 
         let mut sf_file_bytes = Vec::new();
         archive
             .by_name(CERT_SF_NAME)
-            .map_err(|e| SignerError::Validation(
-                format!("No SF file found ({}): {}", CERT_SF_NAME, e)
-            ))?
+            .map_err(|e| {
+                SignerError::Validation(format!("No SF file found ({}): {}", CERT_SF_NAME, e))
+            })?
             .read_to_end(&mut sf_file_bytes)?;
 
         public_key.verify(&sf_file_bytes, &signature_bytes)?;
@@ -46,16 +48,21 @@ impl ArtifactVerifier {
         let mut manifest_bytes = Vec::new();
         archive
             .by_name(MANIFEST_NAME)
-            .map_err(|e| SignerError::Validation(
-                format!("No Manifest file found ({}): {}", MANIFEST_NAME, e)
-            ))?
+            .map_err(|e| {
+                SignerError::Validation(format!(
+                    "No Manifest file found ({}): {}",
+                    MANIFEST_NAME, e
+                ))
+            })?
             .read_to_end(&mut manifest_bytes)?;
 
         let manifest_hash = CryptoEngine::compute_sha1(&manifest_bytes);
         let sf_content = String::from_utf8_lossy(&sf_file_bytes);
 
         if !sf_content.contains(&format!("SHA1-Digest-Manifest: {}", manifest_hash)) {
-            return Err(SignerError::Validation("Manifest hash in SF file does not match".into()));
+            return Err(SignerError::Validation(
+                "Manifest hash in SF file does not match".into(),
+            ));
         }
 
         let manifest_str = String::from_utf8_lossy(&manifest_bytes);
@@ -77,7 +84,9 @@ impl ArtifactVerifier {
             let mut hasher_input = Vec::new();
             loop {
                 let n = f.read(&mut buf)?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 hasher_input.extend_from_slice(&buf[..n]);
             }
             let digest = CryptoEngine::compute_sha1(&hasher_input);
@@ -85,12 +94,13 @@ impl ArtifactVerifier {
         }
 
         for (name, file_digest) in &file_map {
-            let m_digest = manifest_entries.get(name).ok_or_else(|| SignerError::Validation(
-                format!("Manifest missing entry for {}", name)
-            ))?;
+            let m_digest = manifest_entries.get(name).ok_or_else(|| {
+                SignerError::Validation(format!("Manifest missing entry for {}", name))
+            })?;
             if m_digest != file_digest {
                 return Err(SignerError::Validation(format!(
-                    "Manifest digest mismatch for {}", name
+                    "Manifest digest mismatch for {}",
+                    name
                 )));
             }
         }
@@ -99,7 +109,8 @@ impl ArtifactVerifier {
         for name in manifest_entries.keys() {
             if !file_map.contains_key(name) {
                 return Err(SignerError::Validation(format!(
-                    "Manifest references missing file {}", name
+                    "Manifest references missing file {}",
+                    name
                 )));
             }
         }
@@ -107,12 +118,13 @@ impl ArtifactVerifier {
         for (name, m_digest) in &manifest_entries {
             let entry_bytes = Self::make_manifest_entry_bytes(name, m_digest);
             let entry_hash = CryptoEngine::compute_sha1(&entry_bytes);
-            let sf_digest = sf_entries.get(name).ok_or_else(|| SignerError::Validation(
-                format!("SF missing entry for {}", name)
-            ))?;
+            let sf_digest = sf_entries
+                .get(name)
+                .ok_or_else(|| SignerError::Validation(format!("SF missing entry for {}", name)))?;
             if sf_digest != &entry_hash {
                 return Err(SignerError::Validation(format!(
-                    "SF digest mismatch for {}", name
+                    "SF digest mismatch for {}",
+                    name
                 )));
             }
         }
@@ -169,7 +181,9 @@ impl ArtifactVerifier {
             let remaining = len - cursor;
             let limit = if cursor == 0 { 72 } else { 71 };
             let chunk_size = std::cmp::min(remaining, limit);
-            if cursor > 0 { out.push(b' '); }
+            if cursor > 0 {
+                out.push(b' ');
+            }
             out.extend_from_slice(&line[cursor..cursor + chunk_size]);
             out.extend_from_slice(b"\r\n");
             cursor += chunk_size;

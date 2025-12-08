@@ -94,7 +94,10 @@ impl KeyChain {
                 .1;
             let pk_der = cert.public_key().subject_public_key.data.to_vec();
             let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
-            (Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)), nb)
+            (
+                Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
+                nb,
+            )
         } else {
             // Simplified: Always use default_keys if no path provided
             let pem = pem_crate::parse(crate::default_keys::PUBLIC_KEY.as_bytes())?;
@@ -104,7 +107,10 @@ impl KeyChain {
                 .1;
             let pk_der = cert.public_key().subject_public_key.data.to_vec();
             let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
-            (Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)), nb)
+            (
+                Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
+                nb,
+            )
         };
 
         if private_key.is_none() && public_key.is_none() {
@@ -113,7 +119,11 @@ impl KeyChain {
             ));
         }
 
-        Ok(Self { private_key, public_key, cert_not_before })
+        Ok(Self {
+            private_key,
+            public_key,
+            cert_not_before,
+        })
     }
 
     pub fn get_reproducible_timestamp(&self) -> DateTime {
@@ -220,7 +230,10 @@ impl ArtifactProcessor {
             }
         }
 
-        Ok(NestedDigests { digests, nested_sources })
+        Ok(NestedDigests {
+            digests,
+            nested_sources,
+        })
     }
 
     pub fn write_signed_zip(
@@ -235,7 +248,11 @@ impl ArtifactProcessor {
             timestamp.year(), timestamp.month(), timestamp.day(), timestamp.hour(), timestamp.minute(), timestamp.second()
         ));
 
-        let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
+        let out_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         // 1. Generate Manifest
@@ -358,7 +375,11 @@ impl ArtifactProcessor {
             timestamp.year(), timestamp.month(), timestamp.day(), timestamp.hour(), timestamp.minute(), timestamp.second()
         ));
 
-        let out_file = OpenOptions::new().create(true).write(true).truncate(true).open(output)?;
+        let out_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         let manifest_bytes = Self::gen_manifest(digests);
@@ -501,8 +522,10 @@ impl ArtifactProcessor {
     }
 
     fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
-        let key_pair =
-            keys.private_key.as_ref().ok_or(SignerError::Config("Private Key Missing".into()))?;
+        let key_pair = keys
+            .private_key
+            .as_ref()
+            .ok_or(SignerError::Config("Private Key Missing".into()))?;
 
         let mut signature = vec![0u8; key_pair.public().modulus_len()];
 

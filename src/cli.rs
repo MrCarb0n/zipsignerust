@@ -15,7 +15,9 @@ pub fn run() -> Result<(), SignerError> {
     let binary_name = std::env::args()
         .next()
         .and_then(|p| {
-            std::path::Path::new(&p).file_name().map(|s| s.to_string_lossy().into_owned())
+            std::path::Path::new(&p)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| APP_BIN_NAME.to_string());
 
@@ -30,8 +32,17 @@ pub fn run() -> Result<(), SignerError> {
         .subcommand(
             Command::new("sign")
                 .about("Sign a ZIP/APK/JAR archive")
-                .arg(Arg::new("input").required(true).help("Path to the input ZIP file").index(1))
-                .arg(Arg::new("output").help("Path to save the signed ZIP (optional)").index(2))
+                .arg(
+                    Arg::new("input")
+                        .required(true)
+                        .help("Path to the input ZIP file")
+                        .index(1),
+                )
+                .arg(
+                    Arg::new("output")
+                        .help("Path to save the signed ZIP (optional)")
+                        .index(2),
+                )
                 .arg(
                     Arg::new("private_key")
                         .short('k')
@@ -63,7 +74,10 @@ pub fn run() -> Result<(), SignerError> {
             Command::new("verify")
                 .about("Verify the signature of an archive")
                 .arg(
-                    Arg::new("input").required(true).help("Path to the archive to verify").index(1),
+                    Arg::new("input")
+                        .required(true)
+                        .help("Path to the archive to verify")
+                        .index(1),
                 )
                 .arg(
                     Arg::new("public_key")
@@ -113,7 +127,10 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             let key_chain = KeyChain::new(None, config.cert_path.as_deref())?;
 
             ui::print_mode_header("VERIFICATION MODE");
-            ui::log_info(&format!("Verifying integrity of: `{}`", config.input_path.display()));
+            ui::log_info(&format!(
+                "Verifying integrity of: `{}`",
+                config.input_path.display()
+            ));
             if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
                 ui::log_success("Signature is valid. The artifact is authentic.");
             }
@@ -143,7 +160,10 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             let working_input = if inplace {
                 let backup = config.input_path.with_extension("bak");
                 std::fs::rename(&config.input_path, &backup)?;
-                ui::log_warn(&format!("Original file backed up to: `{}`", backup.display()));
+                ui::log_warn(&format!(
+                    "Original file backed up to: `{}`",
+                    backup.display()
+                ));
                 backup
             } else {
                 config.input_path.clone()
@@ -179,7 +199,9 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
                     if inplace {
                         match std::fs::rename(&working_input, &config.input_path) {
                             Ok(_) => {
-                                ui::log_error_detail("Original file has been restored from backup.");
+                                ui::log_error_detail(
+                                    "Original file has been restored from backup.",
+                                );
                                 return Err(e);
                             }
                             Err(restore_err) => {

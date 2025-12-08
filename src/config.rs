@@ -33,7 +33,9 @@ impl Config {
         match matches.subcommand() {
             Some(("sign", sub_matches)) => Self::parse_sign(sub_matches),
             Some(("verify", sub_matches)) => Self::parse_verify(sub_matches),
-            _ => Err(SignerError::Config("No subcommand provided. Use 'sign' or 'verify'.".into())),
+            _ => Err(SignerError::Config(
+                "No subcommand provided. Use 'sign' or 'verify'.".into(),
+            )),
         }
     }
 
@@ -60,7 +62,9 @@ impl Config {
 
         let inplace = matches.get_flag("inplace");
         if inplace && input_temp_file.is_some() {
-            return Err(SignerError::Config("Cannot use --inplace with stdin input.".into()));
+            return Err(SignerError::Config(
+                "Cannot use --inplace with stdin input.".into(),
+            ));
         }
 
         let mut is_stdout = false;
@@ -80,9 +84,12 @@ impl Config {
             let stem = input_path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .ok_or_else(|| SignerError::Config(
-                    format!("Invalid filename (no stem or non-UTF8): {}", input_path.display())
-                ))?;
+                .ok_or_else(|| {
+                    SignerError::Config(format!(
+                        "Invalid filename (no stem or non-UTF8): {}",
+                        input_path.display()
+                    ))
+                })?;
             input_path.with_file_name(format!("{}_signed.zip", stem))
         };
 
@@ -115,8 +122,10 @@ impl Config {
         let output_path = input_path.clone();
 
         // Verification mainly needs the public key/cert
-        let cert_path =
-            matches.get_one::<String>("public_key").map(Path::new).map(|p| p.to_path_buf());
+        let cert_path = matches
+            .get_one::<String>("public_key")
+            .map(Path::new)
+            .map(|p| p.to_path_buf());
         // Private key is irrelevant for verify, but we parse it if passed (unlikely in this mode)
         let key_path = None;
 
