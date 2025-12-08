@@ -139,8 +139,7 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         }
         config::Mode::Sign { inplace } => {
             ui::log_info("Loading cryptographic keys...");
-            let key_chain =
-                KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref())?;
+            let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref())?;
 
             ui::print_mode_header("SIGNING MODE");
             ui::log_info(&format!("Source: `{}`", config.input_path.display()));

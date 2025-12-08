@@ -19,6 +19,7 @@ path = "src/main.rs"
 ring = "0.17"
 pem = "1.0"
 base64 = "0.21"
+rayon = "1.10"
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "suggestions", "error-context"] }
 zip = { version = "2.1", default-features = false, features = ["deflate", "bzip2", "zstd", "lzma", "time"] }
 x509-parser = "0.15"
