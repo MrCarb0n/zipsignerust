@@ -54,7 +54,6 @@ jobs:
                       cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${OUT_NAME}"
                   else
                       cargo build --release --target ${{ matrix.target }}
-                      # Handle Windows .exe extension
                       if [[ "${{ matrix.target }}" == *"windows"* ]]; then
                           BIN_NAME="${BIN_NAME}.exe"
                           OUT_NAME="${OUT_NAME}.exe"
@@ -88,40 +87,33 @@ jobs:
                   pattern: binary-*
                   merge-multiple: true
 
-            - name: Determine Release Type
-              id: release_type
-              run: |
-                  if [[ "${{ github.ref }}" == "refs/heads/master" ]] || [[ "${{ github.ref }}" == "refs/tags/latest" ]]; then
-                      echo "type=rolling" >> $GITHUB_OUTPUT
-                      echo "tag_name=latest" >> $GITHUB_OUTPUT
-                      echo "title=🚀 Latest Rolling Release" >> $GITHUB_OUTPUT
-                  else
-                      echo "type=versioned" >> $GITHUB_OUTPUT
-                      echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-                      echo "title=📦 Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-                  fi
-
             - name: Generate Release Notes
               id: notes
               run: |
                   chmod +x .github/scripts/gen_notes.sh
-
-                  # Call the script to generate markdown
                   ./.github/scripts/gen_notes.sh \
-                    "${{ steps.release_type.outputs.type }}" \
-                    "${{ steps.release_type.outputs.tag_name }}" \
+                    "${{ (startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/tags/latest') && 'versioned' || 'rolling' }}" \
+                    "${{ (startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/tags/latest') && github.ref_name || 'latest' }}" \
                     "${{ github.repository }}" \
                     "${{ github.run_id }}" \
                     "${{ github.sha }}" > release_notes.md
 
+            - name: Set Environment Variables
+              run: |
+                  if [[ "${{ github.ref }}" == "refs/tags/"* ]] && [[ "${{ github.ref }}" != "refs/tags/latest" ]]; then
+                     echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+                     echo "TITLE=📦 Release ${{ github.ref_name }}" >> $GITHUB_ENV
+                  else
+                     echo "TAG_NAME=latest" >> $GITHUB_ENV
+                     echo "TITLE=🚀 Latest Rolling Release" >> $GITHUB_ENV
+                  fi
+
             - name: Publish via GitHub CLI
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  TAG: ${{ steps.release_type.outputs.tag_name }}
-                  TITLE: ${{ steps.release_type.outputs.title }}
+                  TAG: ${{ env.TAG_NAME }}
               run: |
                   echo "::group::Cleanup Old Release"
-                  # Force delete old 'latest' release/tag synchronously
                   if [[ "$TAG" == "latest" ]]; then
                     gh release delete latest --cleanup-tag --yes || true
                     git push origin :refs/tags/latest || true
@@ -130,12 +122,12 @@ jobs:
                   echo "::endgroup::"
 
                   echo "::group::Create New Release"
+                  # REMOVED --verify-tag because we just deleted the tag!
                   gh release create "$TAG" all_dist/* \
                     --target ${{ github.sha }} \
-                    --title "$TITLE" \
+                    --title "${{ env.TITLE }}" \
                     --notes-file release_notes.md \
-                    --latest \
-                    --verify-tag
+                    --latest
                   echo "::endgroup::"
 
             - name: Release URL
