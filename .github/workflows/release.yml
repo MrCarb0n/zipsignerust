@@ -111,9 +111,7 @@ jobs:
             - name: Prepare Rolling Release
               if: steps.release_type.outputs.type == 'rolling'
               run: |
-                  # Ensure script is executable (just in case git index missed it)
                   chmod +x .github/scripts/prepare_rolling.sh
-
                   ./.github/scripts/prepare_rolling.sh \
                     "${{ steps.release_type.outputs.type }}" \
                     "${{ github.repository }}" \
@@ -123,7 +121,6 @@ jobs:
               id: notes
               run: |
                   chmod +x .github/scripts/gen_notes.sh
-
                   ./.github/scripts/gen_notes.sh \
                     "${{ steps.release_type.outputs.type }}" \
                     "${{ steps.release_type.outputs.tag_name }}" \
@@ -140,11 +137,12 @@ jobs:
                   name: ${{ steps.release_type.outputs.release_name }}
                   body_path: release_notes.md
                   files: all_dist/*
+                  target_commitish: ${{ github.sha }}
                   prerelease: false
                   draft: false
                   make_latest: true
                   fail_on_unmatched_files: true
-                  overwrite_files: true # Explicitly allow overwriting assets for rolling releases
+                  overwrite_files: true
 
             - name: Release URL
               run: |
