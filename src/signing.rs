@@ -584,5 +584,3 @@ impl KeyChain {
             })
     }
 }
-
-}
