@@ -5,7 +5,12 @@
  */
 
 use crate::{
-    config::Config, error::SignerError, signing::KeyChain, ui, verification::ArtifactVerifier, *,
+    config::{self, Config},
+    error::SignerError,
+    signing::{self, KeyChain},
+    ui,
+    verification::ArtifactVerifier,
+    *,
 };
 use clap::{Arg, ArgAction, Command};
 use std::io;
@@ -28,10 +33,11 @@ pub fn run() -> Result<(), SignerError> {
         .about(APP_ABOUT)
         .help_template("{about-with-newline}{usage-heading} {usage}\n\n{all-args}\n")
         .subcommand_required(true)
-        .arg_required_else_help(true)
+        .arg_required_else_help(true) // Show help if no subcommand provided
         .subcommand(
             Command::new("sign")
                 .about("Sign a ZIP/APK/JAR archive")
+                .arg_required_else_help(true) // <--- ADDED: Show help if 'sign' has no args
                 .arg(
                     Arg::new("input")
                         .required(true)
@@ -73,6 +79,7 @@ pub fn run() -> Result<(), SignerError> {
         .subcommand(
             Command::new("verify")
                 .about("Verify the signature of an archive")
+                .arg_required_else_help(true) // <--- ADDED: Show help if 'verify' has no args
                 .arg(
                     Arg::new("input")
                         .required(true)
@@ -117,13 +124,8 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
         config.output_path = temp.path().to_path_buf();
     }
 
-    // Note: Verification only requires public key. Signing usually requires private (and public for metadata).
-    // KeyChain::new will warn or fail if requirements aren't met.
-
     match config.mode {
         config::Mode::Verify => {
-            // For verify, we only really care about the public key.
-            // If the user didn't supply one, we might use the default embedded one (if allowed by KeyChain logic).
             let key_chain = KeyChain::new(None, config.cert_path.as_deref())?;
 
             ui::print_mode_header("VERIFICATION MODE");
@@ -136,9 +138,9 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
             }
         }
         config::Mode::Sign { inplace } => {
-            // For signing, we need the private key.
             ui::log_info("Loading cryptographic keys...");
-            let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref())?;
+            let key_chain =
+                KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref())?;
 
             ui::print_mode_header("SIGNING MODE");
             ui::log_info(&format!("Source: `{}`", config.input_path.display()));
