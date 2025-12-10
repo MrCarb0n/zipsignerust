@@ -80,31 +80,38 @@ impl Ui {
     }
 
     pub fn info(&self, msg: &str) {
-        // Standard info: "[i]" in blue
+        // Standard info is hidden in default mode, only shown in verbose
+        if !self.verbose {
+            return;
+        }
         self.paint("[i]", msg, COLOR_BLUE, false, false);
     }
 
     pub fn verbose(&self, msg: &str) {
-        // Verbose info: "[v]" in dim style, only if verbose is on
+        // Verbose info only shown in verbose mode
         if self.verbose {
             self.paint("[v]", msg, "0", false, true);
         }
     }
 
     pub fn success(&self, msg: &str) {
+        // Always shown unless silent
         self.paint("[+]", msg, COLOR_GREEN, false, false);
     }
 
     pub fn warn(&self, msg: &str) {
+        // Always shown unless silent
         self.paint("[!]", msg, COLOR_YELLOW, true, false);
     }
 
     pub fn error(&self, msg: &str) {
+        // Always shown
         self.paint("[x]", msg, COLOR_RED, true, false);
     }
 
     pub fn print_summary(&self, title: &str, fields: &[(&str, String)]) {
-        if self.silent {
+        // Summary hidden in default mode to keep it minimal
+        if self.silent || !self.verbose {
             return;
         }
         println!(); 

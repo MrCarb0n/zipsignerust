@@ -125,8 +125,8 @@ impl KeyChain {
         if let Some(dt) = &self.cert_not_before {
             return *dt;
         }
-        // Fallback to 1980-01-01 00:00:00 UTC
-        DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+        // Fallback to 2100-01-01 11:11:11 UTC (Futuristic fallback)
+        DateTime::from_date_and_time(2100, 1, 1, 11, 11, 11).unwrap()
     }
 
     #[cfg(unix)]
@@ -152,17 +152,24 @@ impl KeyChain {
     fn asn1_to_zip_datetime(asn1: ASN1Time, ui: &Ui) -> DateTime {
         let dt = asn1.to_datetime();
 
-        // Force interpretation as UTC components directly
-        let year = dt.year() as u16;
+        // 1. Clamp minimal year to 2008 (Android epoch) to avoid 1980/1996 issues
+        let mut year = dt.year() as u16;
+        if year < 2008 {
+            year = 2008;
+        } else if year > 2107 {
+            year = 2107;
+        }
+
         let month = dt.month() as u8;
         let day = dt.day();
         let hour = dt.hour();
         let minute = dt.minute();
+        // ZIP seconds are divided by 2, so precision is 2 seconds.
         let second = dt.second();
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
-            ui.error("Failed to create DateTime. Fallback to 1980-01-01 00:00:00 UTC.");
-            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+            ui.error("Failed to create DateTime from certificate. Fallback to 2100-01-01.");
+            DateTime::from_date_and_time(2100, 1, 1, 11, 11, 11).unwrap()
         })
     }
 }
