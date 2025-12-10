@@ -1,6 +1,6 @@
 /*
  * ZipSigner Rust v1.0.0
- * Copyright (c) 2024 Tiash / @MrCarb0n and Earth Inc.
+ * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
  * Licensed under the MIT License.
  */
 

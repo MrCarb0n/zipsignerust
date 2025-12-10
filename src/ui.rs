@@ -65,7 +65,7 @@ impl Ui {
         let title = format!("{} v{}", APP_NAME, APP_VERSION);
         let width = title.len() + 4;
         let border = "-".repeat(width);
-        
+
         println!("+{}+", border);
         println!("|  {}  |", title);
         println!("+{}+", border);
@@ -114,13 +114,13 @@ impl Ui {
         if self.silent || !self.verbose {
             return;
         }
-        println!(); 
+        println!();
         if self.colors {
             println!("\x1b[1m{}:\x1b[0m", title);
         } else {
             println!("{}:", title);
         }
-        
+
         for (key, val) in fields {
             println!("  {:<15} {}", key, val);
         }

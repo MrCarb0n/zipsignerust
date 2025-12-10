@@ -1,14 +1,10 @@
-
 <div align="center">
 
 # ZipSignerust
 
 **High-performance, memory-safe cryptographic signing and verification for Android ZIP/APK/JAR packages.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
 </div>
 
@@ -72,29 +68,30 @@ zipsignerust verify signed-archive.zip --public-key my-cert.pem
 
 ## ⚙️ Advanced Options
 
-| Option | Description |
-| :--- | :--- |
-| `-i`, `--inplace` | Modify the input file directly (creates `.bak` backup) |
-| `-f`, `--overwrite` | Force overwrite if output file exists |
-| `-k`, `--private-key` | Path to custom private key (PEM/PK8) |
-| `-p`, `--public-key` | Path to custom public key/certificate (PEM) |
+| Option                | Description                                            |
+| :-------------------- | :----------------------------------------------------- |
+| `-i`, `--inplace`     | Modify the input file directly (creates `.bak` backup) |
+| `-f`, `--overwrite`   | Force overwrite if output file exists                  |
+| `-k`, `--private-key` | Path to custom private key (PEM/PK8)                   |
+| `-p`, `--public-key`  | Path to custom public key/certificate (PEM)            |
 
 ## 🧩 How It Works
 
-1. **Manifest Generation:** Creates `META-INF/MANIFEST.MF` with SHA-1 digests of all files.
-2. **Signature File:** Creates `META-INF/CERT.SF` containing digests of the manifest.
-3. **RSA Signature:** specific `META-INF/CERT.RSA` block containing the signature of the SF file.
-4. **Nested Processing:** If a nested archive is found, it extracts, signs, and re-embeds it before signing the parent.
+1.  **Manifest Generation:** Creates `META-INF/MANIFEST.MF` with SHA-1 digests of all files.
+2.  **Signature File:** Creates `META-INF/CERT.SF` containing digests of the manifest.
+3.  **RSA Signature:** specific `META-INF/CERT.RSA` block containing the signature of the SF file.
+4.  **Nested Processing:** If a nested archive is found, it extracts, signs, and re-embeds it before signing the parent.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome\! Please check [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for guidelines.
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](https://www.google.com/search?q=LICENSE).
 
 ---
+
 <div align="center">
-Made with ❤️ by <a href="https://github.com/MrCarb0n">Tiash / @MrCarb0n</a>
+Made with ❤️ from Bangladesh 🇧🇩
 </div>

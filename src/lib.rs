@@ -1,6 +1,6 @@
 /*
  * ZipSigner Rust v1.0.0
- * Copyright (c) 2024 Tiash / @MrCarb0n and Earth Inc.
+ * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
  * Licensed under the MIT License.
  */
 
@@ -25,7 +25,7 @@ pub mod default_keys;
 pub const APP_NAME: &str = "ZipSignerust";
 pub const APP_BIN_NAME: &str = "zipsignerust";
 pub const APP_VERSION: &str = "1.0.0";
-pub const APP_AUTHOR: &str = "Tiash / @MrCarb0n";
+pub const APP_AUTHOR: &str = "Tiash H Kabir / @MrCarb0n";
 pub const APP_ABOUT: &str = "High-performance, memory-safe cryptographic signing and verification for Android ZIP/APK/JAR packages.";
 pub const BUFFER_SIZE: usize = 64 * 1024;
 

@@ -1,6 +1,6 @@
 /*
  * ZipSigner Rust v1.0.0
- * Copyright (c) 2024 Tiash / @MrCarb0n and Earth Inc.
+ * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
  * Licensed under the MIT License.
  */
 
@@ -65,48 +65,17 @@ pub struct KeyChain {
     pub cert_not_before: Option<DateTime>,
 }
 
-impl KeyChain {
-    pub fn new(priv_path: Option<&Path>, pub_path: Option<&Path>, ui: &Ui) -> Result<Self, SignerError> {
-        let private_key = if let Some(path) = priv_path {
-            Self::check_key_permissions(path, ui)?;
-            let pem_data = fs::read(path)?;
-            let pem = pem_crate::parse(pem_data)?;
-            RsaKeyPair::from_pkcs8(&pem.contents)
-                .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))
-                .ok()
-        } else {
-            let pem = pem_crate::parse(crate::default_keys::PRIVATE_KEY.as_bytes())?;
-            RsaKeyPair::from_pkcs8(&pem.contents)
-                .map_err(|e| SignerError::Config(format!("Invalid Default Private Key: {}", e)))
-                .ok()
-        };
+// Type alias to satisfy clippy::type-complexity
+type LoadedPublicKey = (Option<UnparsedPublicKey<Vec<u8>>>, Option<DateTime>);
 
-        let (public_key, cert_not_before) = if let Some(path) = pub_path {
-            let pem_data = fs::read(path)?;
-            let pem = pem_crate::parse(pem_data)?;
-            let der = pem.contents;
-            let cert = X509Certificate::from_der(&der)
-                .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?
-                .1;
-            let pk_der = cert.public_key().subject_public_key.data.to_vec();
-            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
-            (
-                Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
-                nb,
-            )
-        } else {
-            let pem = pem_crate::parse(crate::default_keys::PUBLIC_KEY.as_bytes())?;
-            let der = pem.contents;
-            let cert = X509Certificate::from_der(&der)
-                .map_err(|e| SignerError::Config(format!("Invalid default certificate: {:?}", e)))?
-                .1;
-            let pk_der = cert.public_key().subject_public_key.data.to_vec();
-            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
-            (
-                Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
-                nb,
-            )
-        };
+impl KeyChain {
+    pub fn new(
+        priv_path: Option<&Path>,
+        pub_path: Option<&Path>,
+        ui: &Ui,
+    ) -> Result<Self, SignerError> {
+        let private_key = Self::load_private_key(priv_path, ui)?;
+        let (public_key, cert_not_before) = Self::load_public_key(pub_path, ui)?;
 
         if private_key.is_none() && public_key.is_none() {
             return Err(SignerError::Config(
@@ -119,6 +88,41 @@ impl KeyChain {
             public_key,
             cert_not_before,
         })
+    }
+
+    fn load_private_key(path: Option<&Path>, ui: &Ui) -> Result<Option<RsaKeyPair>, SignerError> {
+        let content = if let Some(p) = path {
+            Self::check_key_permissions(p, ui)?;
+            fs::read(p)?
+        } else {
+            crate::default_keys::PRIVATE_KEY.as_bytes().to_vec()
+        };
+
+        let pem = pem_crate::parse(&content)?;
+        let key_pair = RsaKeyPair::from_pkcs8(&pem.contents)
+            .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))?;
+
+        Ok(Some(key_pair))
+    }
+
+    fn load_public_key(path: Option<&Path>, ui: &Ui) -> Result<LoadedPublicKey, SignerError> {
+        let content = if let Some(p) = path {
+            fs::read(p)?
+        } else {
+            crate::default_keys::PUBLIC_KEY.as_bytes().to_vec()
+        };
+
+        let pem = pem_crate::parse(&content)?;
+        let (_, cert) = X509Certificate::from_der(&pem.contents)
+            .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?;
+
+        let pk_der = cert.public_key().subject_public_key.data.to_vec();
+        let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
+
+        Ok((
+            Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
+            nb,
+        ))
     }
 
     pub fn get_reproducible_timestamp(&self) -> DateTime {
@@ -153,12 +157,7 @@ impl KeyChain {
         let dt = asn1.to_datetime();
 
         // 1. Clamp minimal year to 2008 (Android epoch) to avoid 1980/1996 issues
-        let mut year = dt.year() as u16;
-        if year < 2008 {
-            year = 2008;
-        } else if year > 2107 {
-            year = 2107;
-        }
+        let year = (dt.year() as u16).clamp(2008, 2107);
 
         let month = dt.month() as u8;
         let day = dt.day();
@@ -326,10 +325,7 @@ impl ArtifactProcessor {
 
                 writer.start_file(&name, options)?;
                 if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
-                    ui.info(&format!(
-                        "Signing nested archive: `{}`",
-                        name
-                    ));
+                    ui.info(&format!("Signing nested archive: `{}`", name));
                     let tmpdir = tempdir()?;
                     let nested_src = tmpdir.path().join("nested-src.zip");
                     let nested_signed = tmpdir.path().join("nested-signed.zip");
@@ -384,10 +380,7 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!(
-            "Set mtime on output: `{}`",
-            output.display()
-        ));
+        ui.verbose(&format!("Set mtime on output: `{}`", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
@@ -463,10 +456,7 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!(
-            "Set mtime on output: `{}`",
-            output.display()
-        ));
+        ui.verbose(&format!("Set mtime on output: `{}`", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }

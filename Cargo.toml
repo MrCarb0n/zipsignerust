@@ -2,7 +2,7 @@
 name = "zipsignerust"
 version = "1.0.0"
 edition = "2021"
-authors = ["Tiash / @MrCarb0n"]
+authors = ["Tiash H Kabir / @MrCarb0n"]
 description = "High-performance cryptographic signer for Android ZIP/OTA packages."
 license = "MIT"
 repository = "https://github.com/MrCarb0n/zipsignerust"

@@ -135,14 +135,15 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 "Verifying integrity of: `{}`",
                 config.input_path.display()
             ));
-            
+
             if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
                 ui.success("Signature is valid. The artifact is authentic.");
             }
         }
         config::Mode::Sign { inplace } => {
             ui.info("Loading cryptographic keys...");
-            let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
+            let key_chain =
+                KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
             ui.print_mode_header("SIGNING MODE");
             ui.info(&format!("Source: `{}`", config.input_path.display()));
@@ -187,28 +188,38 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                     if inplace {
                         std::fs::remove_file(&working_input)?;
                         ui.success("In-place signing complete.");
-                        
-                        ui.print_summary("Signing Report", &[
-                            ("Status", "Success".to_string()),
-                            ("Mode", "In-Place".to_string()),
-                            ("File", config.input_path.display().to_string()),
-                        ]);
+
+                        ui.print_summary(
+                            "Signing Report",
+                            &[
+                                ("Status", "Success".to_string()),
+                                ("Mode", "In-Place".to_string()),
+                                ("File", config.input_path.display().to_string()),
+                            ],
+                        );
                     } else if config.is_stdout {
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
                         io::copy(&mut file, &mut stdout)?;
                     } else {
                         ui.success("Archive successfully signed.");
-                        
-                        let key_type = if config.key_path.is_some() { "Custom (PEM)" } else { "Embedded (Test)" };
-                        
-                        ui.print_summary("Signing Report", &[
-                            ("Status", "Success".to_string()),
-                            ("Mode", "Standard".to_string()),
-                            ("Input", config.input_path.display().to_string()),
-                            ("Output", config.output_path.display().to_string()),
-                            ("Key Used", key_type.to_string()),
-                        ]);
+
+                        let key_type = if config.key_path.is_some() {
+                            "Custom (PEM)"
+                        } else {
+                            "Embedded (Test)"
+                        };
+
+                        ui.print_summary(
+                            "Signing Report",
+                            &[
+                                ("Status", "Success".to_string()),
+                                ("Mode", "Standard".to_string()),
+                                ("Input", config.input_path.display().to_string()),
+                                ("Output", config.output_path.display().to_string()),
+                                ("Key Used", key_type.to_string()),
+                            ],
+                        );
                     }
                 }
                 Err(e) => {
