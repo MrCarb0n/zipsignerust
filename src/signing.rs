@@ -99,13 +99,17 @@ impl KeyChain {
         };
 
         let pem = pem_crate::parse(&content)?;
-        let key_pair = RsaKeyPair::from_pkcs8(&pem.contents)
+        // Fixed: Use .contents() method instead of field access for pem 3.0 compatibility
+        let key_pair = RsaKeyPair::from_pkcs8(pem.contents())
             .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))?;
 
         Ok(Some(key_pair))
     }
 
-    fn load_public_key(path: Option<&Path>, ui: &Ui) -> Result<LoadedPublicKey, SignerError> {
+    fn load_public_key(
+        path: Option<&Path>,
+        ui: &Ui,
+    ) -> Result<LoadedPublicKey, SignerError> {
         let content = if let Some(p) = path {
             fs::read(p)?
         } else {
@@ -113,14 +117,21 @@ impl KeyChain {
         };
 
         let pem = pem_crate::parse(&content)?;
-        let (_, cert) = X509Certificate::from_der(&pem.contents)
+        // Fixed: Use .contents() method instead of field access for pem 3.0 compatibility
+        let (_, cert) = X509Certificate::from_der(pem.contents())
             .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?;
 
         let pk_der = cert.public_key().subject_public_key.data.to_vec();
-        let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
+        let nb = Some(Self::asn1_to_zip_datetime(
+            cert.validity().not_before,
+            ui,
+        ));
 
         Ok((
-            Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
+            Some(UnparsedPublicKey::new(
+                RSA_VERIFICATION_ALGORITHM,
+                pk_der,
+            )),
             nb,
         ))
     }
@@ -325,7 +336,10 @@ impl ArtifactProcessor {
 
                 writer.start_file(&name, options)?;
                 if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
-                    ui.info(&format!("Signing nested archive: `{}`", name));
+                    ui.info(&format!(
+                        "Signing nested archive: `{}`",
+                        name
+                    ));
                     let tmpdir = tempdir()?;
                     let nested_src = tmpdir.path().join("nested-src.zip");
                     let nested_signed = tmpdir.path().join("nested-signed.zip");
@@ -380,7 +394,10 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("Set mtime on output: `{}`", output.display()));
+        ui.verbose(&format!(
+            "Set mtime on output: `{}`",
+            output.display()
+        ));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
@@ -456,7 +473,10 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("Set mtime on output: `{}`", output.display()));
+        ui.verbose(&format!(
+            "Set mtime on output: `{}`",
+            output.display()
+        ));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
