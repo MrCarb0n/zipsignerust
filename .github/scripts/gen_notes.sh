@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ------------------------------------------------------------------------------
 # Script: gen_notes.sh
-# Description: Generates a Markdown changelog and artifact table.
+# Description: Generates a fancy, fully expanded Markdown changelog and artifact table.
 # ------------------------------------------------------------------------------
 
 RELEASE_TYPE="${1}"
@@ -14,32 +14,37 @@ SHA="${5}"
 
 # Metadata
 SHORT_SHA=$(echo "${SHA}" | cut -c1-8)
-DATE=$(date +'%Y-%m-%d %H:%M:%S UTC')
-DATE_BADGE="${DATE// /%20}"
+# Using URL-safe formats for badges to prevent them from breaking
+DATE_BADGE=$(date +'%Y-%m-%d')
+TIME_BADGE=$(date +'%H:%M:%S')
 WORKFLOW_URL="https://github.com/${REPO_NAME}/actions/runs/${RUN_ID}"
 DL_BASE="https://github.com/${REPO_NAME}/releases/download/${TAG_NAME}"
 
 # 1. Determine Header and Git History context
 if [[ "${RELEASE_TYPE}" == "versioned" ]]; then
-	TITLE_HEADER="**📦 Version ${TAG_NAME} Release**"
+	TITLE_HEADER="## 🎉 Version ${TAG_NAME} Release"
 
 	# Attempt to find the previous tag to generate a diff
 	if PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null); then
 		MSG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
 		STATS=$(git diff --stat "${PREV_TAG}..HEAD")
+		COMMIT_RANGE="${PREV_TAG}..${TAG_NAME}"
 	else
 		# Fallback if no previous tag exists
 		MSG=$(git log --pretty=format:"- %s (%h)")
 		STATS=$(git show --stat HEAD)
+		COMMIT_RANGE="Initial Release"
 	fi
 else
-	TITLE_HEADER="**🚀 Automated Rolling Release**"
+	TITLE_HEADER="## 🚀 Automated Rolling Release"
 	MSG=$(git log -10 --pretty=format:"- %s (%h)")
 
 	if git rev-parse HEAD~1 >/dev/null 2>&1; then
 		STATS=$(git diff --stat HEAD~1 HEAD)
+		COMMIT_RANGE="Previous Build..${SHORT_SHA}"
 	else
 		STATS=$(git show --stat HEAD)
+		COMMIT_RANGE="Initial Build"
 	fi
 fi
 
@@ -55,21 +60,30 @@ cat <<EOF
         |_|         |___|                          
 \`\`\`
 
-[![Build Date](https://img.shields.io/badge/Date-${DATE_BADGE}-blue)](${WORKFLOW_URL}) [![Commit](https://img.shields.io/badge/Commit-${SHORT_SHA}-informational)](${WORKFLOW_URL})
+# Release Information
+
+[![Build Date](https://img.shields.io/badge/📅-${DATE_BADGE}-blue)](${WORKFLOW_URL}) [![Build Time](https://img.shields.io/badge/🕒-${TIME_BADGE}-brightgreen)](${WORKFLOW_URL}) [![Commit](https://img.shields.io/badge/🔗-${SHORT_SHA}-informational)](${WORKFLOW_URL}) [![Release Type](https://img.shields.io/badge/📦-${RELEASE_TYPE}-orange)](${WORKFLOW_URL})
 
 </div>
 
+---
+
 ## 📋 Summary of Changes
+
 \`\`\`text
 ${MSG}
 \`\`\`
 
 ## 📊 Code Impact
+
+**Commit Range:** \`${COMMIT_RANGE}\`
+
 \`\`\`diff
 ${STATS}
 \`\`\`
 
-## 📦 Artifacts
+## 📦 Available Artifacts
+
 | Platform | Architecture | Filename | Size |
 | :--- | :--- | :--- | :--- |
 EOF
@@ -94,9 +108,13 @@ for f in all_dist/*; do
 			PLATFORM="🪟 Windows"
 			ARCH="x86_64"
 			;;
+		*macos*)
+			PLATFORM="🍎 macOS"
+			ARCH="Universal"
+			;;
 		*)
-			PLATFORM="Unknown"
-			ARCH="Unknown"
+			PLATFORM="❓ Unknown"
+			ARCH="❓ Unknown"
 			;;
 		esac
 
@@ -105,8 +123,12 @@ for f in all_dist/*; do
 done
 
 echo ""
+echo "---"
+echo ""
 echo '<div align="center">'
 echo ""
 echo "${TITLE_HEADER}"
+echo ""
+echo '<p>✨ Made with ❤️ from Bangladesh 🇧🇩 ✨</p>'
 echo ""
 echo '</div>'

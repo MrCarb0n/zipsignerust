@@ -98,40 +98,45 @@ impl KeyChain {
             crate::default_keys::PRIVATE_KEY.as_bytes().to_vec()
         };
 
-        let pem = pem_crate::parse(&content)?;
-        // Fixed: Use .contents() method instead of field access for pem 3.0 compatibility
-        let key_pair = RsaKeyPair::from_pkcs8(pem.contents())
-            .map_err(|e| SignerError::Config(format!("Invalid Private Key: {}", e)))?;
+        // Attempt to detect format. PEM starts with '-' usually.
+        let key_pair = if let Ok(pem) = pem_crate::parse(&content) {
+            // It's PEM
+            RsaKeyPair::from_pkcs8(pem.contents())
+                .map_err(|e| SignerError::Config(format!("Invalid PEM Private Key: {}", e)))?
+        } else {
+            // Assume it's raw DER (PK8) if PEM parsing fails
+            ui.verbose("Input is not PEM, attempting to parse as binary PK8/DER...");
+            RsaKeyPair::from_pkcs8(&content)
+                .map_err(|e| SignerError::Config(format!("Invalid PK8/DER Private Key: {}", e)))?
+        };
 
         Ok(Some(key_pair))
     }
 
-    fn load_public_key(
-        path: Option<&Path>,
-        ui: &Ui,
-    ) -> Result<LoadedPublicKey, SignerError> {
+    fn load_public_key(path: Option<&Path>, ui: &Ui) -> Result<LoadedPublicKey, SignerError> {
         let content = if let Some(p) = path {
             fs::read(p)?
         } else {
             crate::default_keys::PUBLIC_KEY.as_bytes().to_vec()
         };
 
-        let pem = pem_crate::parse(&content)?;
-        // Fixed: Use .contents() method instead of field access for pem 3.0 compatibility
-        let (_, cert) = X509Certificate::from_der(pem.contents())
+        // Try PEM first
+        let cert_der = if let Ok(pem) = pem_crate::parse(&content) {
+            pem.contents().to_vec()
+        } else {
+            // Assume raw DER (X.509 binary)
+            ui.verbose("Input is not PEM, attempting to parse as binary X.509 DER...");
+            content
+        };
+
+        let (_, cert) = X509Certificate::from_der(&cert_der)
             .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?;
 
         let pk_der = cert.public_key().subject_public_key.data.to_vec();
-        let nb = Some(Self::asn1_to_zip_datetime(
-            cert.validity().not_before,
-            ui,
-        ));
+        let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
 
         Ok((
-            Some(UnparsedPublicKey::new(
-                RSA_VERIFICATION_ALGORITHM,
-                pk_der,
-            )),
+            Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
             nb,
         ))
     }
@@ -140,8 +145,8 @@ impl KeyChain {
         if let Some(dt) = &self.cert_not_before {
             return *dt;
         }
-        // Fallback to 2100-01-01 11:11:11 UTC (Futuristic fallback)
-        DateTime::from_date_and_time(2100, 1, 1, 11, 11, 11).unwrap()
+        // Fallback only if absolutely no certificate date is found.
+        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0).unwrap()
     }
 
     #[cfg(unix)]
@@ -167,19 +172,20 @@ impl KeyChain {
     fn asn1_to_zip_datetime(asn1: ASN1Time, ui: &Ui) -> DateTime {
         let dt = asn1.to_datetime();
 
-        // 1. Clamp minimal year to 2008 (Android epoch) to avoid 1980/1996 issues
-        let year = (dt.year() as u16).clamp(2008, 2107);
+        // 1. Clamp minimal year to 1980 (ZIP Epoch).
+        // This fixes the issue where 1996 keys were being bumped to 2008.
+        let year = (dt.year() as u16).clamp(1980, 2107);
 
         let month = dt.month() as u8;
         let day = dt.day();
         let hour = dt.hour();
         let minute = dt.minute();
-        // ZIP seconds are divided by 2, so precision is 2 seconds.
+        // ZIP seconds are divided by 2
         let second = dt.second();
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
-            ui.error("Failed to create DateTime from certificate. Fallback to 2100-01-01.");
-            DateTime::from_date_and_time(2100, 1, 1, 11, 11, 11).unwrap()
+            ui.error("Failed to create DateTime from certificate. Fallback used.");
+            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
         })
     }
 }
@@ -336,10 +342,7 @@ impl ArtifactProcessor {
 
                 writer.start_file(&name, options)?;
                 if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
-                    ui.info(&format!(
-                        "Signing nested archive: `{}`",
-                        name
-                    ));
+                    ui.info(&format!("Signing nested archive: {}", name));
                     let tmpdir = tempdir()?;
                     let nested_src = tmpdir.path().join("nested-src.zip");
                     let nested_signed = tmpdir.path().join("nested-signed.zip");
@@ -367,7 +370,7 @@ impl ArtifactProcessor {
                         FileTime::from_unix_time(Self::zip_datetime_to_unix(&timestamp) as i64, 0);
                     set_file_times(&nested_signed, ft, ft)?;
                     ui.verbose(&format!(
-                        "Set mtime on nested archive: `{}`",
+                        "mtime set on nested archive: {}",
                         nested_signed.display()
                     ));
 
@@ -394,10 +397,7 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!(
-            "Set mtime on output: `{}`",
-            output.display()
-        ));
+        ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
@@ -455,7 +455,7 @@ impl ArtifactProcessor {
                 writer.start_file(&name, options)?;
 
                 if let Some(nested_bytes) = nested_sources.get(&name) {
-                    ui.info(&format!("Embedding signed nested archive: `{}`", name));
+                    ui.info(&format!("Embedding signed nested archive: {}", name));
                     writer.write_all(nested_bytes)?;
                 } else {
                     loop {
@@ -473,10 +473,7 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!(
-            "Set mtime on output: `{}`",
-            output.display()
-        ));
+        ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }

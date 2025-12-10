@@ -1,6 +1,6 @@
 /*
  * ZipSigner Rust v1.0.0
- * Copyright (c) 2024 Tiash / @MrCarb0n and Earth Inc.
+ * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
  * Licensed under the MIT License.
  */
 
@@ -31,8 +31,9 @@ pub fn run() -> Result<(), SignerError> {
         .version(APP_VERSION)
         .author(APP_AUTHOR)
         .about(APP_ABOUT)
+        .disable_version_flag(true)
         .help_template("{about-with-newline}{usage-heading} {usage}\n\n{all-args}\n")
-        .subcommand_required(true)
+        .subcommand_required(false)
         .arg_required_else_help(true)
         .subcommand(
             Command::new("sign")
@@ -53,13 +54,13 @@ pub fn run() -> Result<(), SignerError> {
                     Arg::new("private_key")
                         .short('k')
                         .long("private-key")
-                        .help("Custom private key (PEM)"),
+                        .help("Custom private key (PEM/PK8)"),
                 )
                 .arg(
                     Arg::new("public_key")
                         .short('p')
                         .long("public-key")
-                        .help("Custom public key/cert (PEM)"),
+                        .help("Custom public key/cert (PEM/X509)"),
                 )
                 .arg(
                     Arg::new("overwrite")
@@ -100,13 +101,37 @@ pub fn run() -> Result<(), SignerError> {
                 .action(ArgAction::SetTrue)
                 .help("Enable verbose logging"),
         )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(ArgAction::SetTrue)
+                .help("Suppress all output except errors"),
+        )
+        .arg(
+            Arg::new("version_custom")
+                .short('V')
+                .long("version")
+                .action(ArgAction::SetTrue)
+                .help("Print version information"),
+        )
         .get_matches();
 
-    // Initialize UI state
+    if matches.get_flag("version_custom") {
+        let ui = Ui::new(false, false, true);
+        ui.print_version_info();
+        return Ok(());
+    }
+
     let verbose = matches.get_flag("verbose");
-    let ui = Ui::new(verbose, false, true);
+    let quiet = matches.get_flag("quiet");
+    let ui = Ui::new(verbose, quiet, true);
 
     ui.print_banner();
+
+    if matches.subcommand().is_none() {
+        return Err(SignerError::Config("No command provided".into()));
+    }
 
     run_logic(&matches, &ui)
 }
@@ -132,31 +157,41 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
 
             ui.print_mode_header("VERIFICATION MODE");
             ui.info(&format!(
-                "Verifying integrity of: `{}`",
+                "Verifying integrity: {}",
                 config.input_path.display()
             ));
 
             if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
-                ui.success("Signature is valid. The artifact is authentic.");
+                ui.success("Signature valid. Artifact authentic.");
             }
         }
         config::Mode::Sign { inplace } => {
-            ui.info("Loading cryptographic keys...");
+            ui.info("Loading keys...");
             let key_chain =
                 KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
             ui.print_mode_header("SIGNING MODE");
-            ui.info(&format!("Source: `{}`", config.input_path.display()));
-            ui.info(&format!("Target: `{}`", config.output_path.display()));
+
+            if config._input_temp_file.is_some() {
+                ui.info("Source: <stdin pipe>");
+            } else {
+                ui.info(&format!("Source: {}", config.input_path.display()));
+            }
+
+            if config.is_stdout {
+                ui.info("Target: <stdout pipe>");
+            } else {
+                ui.info(&format!("Target: {}", config.output_path.display()));
+            }
 
             if config.output_path.exists() && !inplace && !config.overwrite && !config.is_stdout {
                 return Err(SignerError::Config(format!(
-                    "Output file already exists: `{}`. Use --overwrite to proceed.",
+                    "Output exists: {}. Use --overwrite.",
                     config.output_path.display()
                 )));
             }
 
-            ui.info("Parsing archive and computing file digests...");
+            ui.info("Computing digests...");
             let nested = signing::ArtifactProcessor::compute_digests_prepare_nested(
                 &config.input_path,
                 &key_chain,
@@ -166,16 +201,13 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             let working_input = if inplace {
                 let backup = config.input_path.with_extension("bak");
                 std::fs::rename(&config.input_path, &backup)?;
-                ui.warn(&format!(
-                    "Original file backed up to: `{}`",
-                    backup.display()
-                ));
+                ui.warn(&format!("Backup created: {}", backup.display()));
                 backup
             } else {
                 config.input_path.clone()
             };
 
-            ui.info("Generating signature and writing signed archive...");
+            ui.info("Signing artifact...");
             match signing::ArtifactProcessor::write_signed_zip_with_sources(
                 &working_input,
                 &config.output_path,
@@ -205,9 +237,9 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                         ui.success("Archive successfully signed.");
 
                         let key_type = if config.key_path.is_some() {
-                            "Custom (PEM)"
+                            "Custom (PEM/PK8)"
                         } else {
-                            "Embedded (Test)"
+                            "ZipSignerust Dev"
                         };
 
                         ui.print_summary(
@@ -226,16 +258,16 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                     if inplace {
                         match std::fs::rename(&working_input, &config.input_path) {
                             Ok(_) => {
-                                ui.error("Original file has been restored from backup.");
+                                ui.error("Original file restored from backup.");
                                 return Err(e);
                             }
                             Err(restore_err) => {
                                 ui.error(&format!(
-                                    "CRITICAL: Failed to restore backup after error: {}",
+                                    "CRITICAL: Backup restore failed: {}",
                                     restore_err
                                 ));
                                 return Err(SignerError::Config(format!(
-                                    "Signing failed AND backup restoration failed. Original error: {}. Restore error: {}. Backup location: {}",
+                                    "Signing failed AND restore failed. Error: {}. Restore: {}. Backup: {}",
                                     e, restore_err, working_input.display()
                                 )));
                             }

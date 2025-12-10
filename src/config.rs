@@ -25,21 +25,24 @@ pub struct Config {
     pub cert_path: Option<PathBuf>,
     pub overwrite: bool,
     pub is_stdout: bool,
+    pub quiet: bool,
     pub _input_temp_file: Option<NamedTempFile>,
 }
 
 impl Config {
     pub fn from_matches(matches: &ArgMatches) -> Result<Self, SignerError> {
+        let quiet = matches.get_flag("quiet");
+
         match matches.subcommand() {
-            Some(("sign", sub_matches)) => Self::parse_sign(sub_matches),
-            Some(("verify", sub_matches)) => Self::parse_verify(sub_matches),
+            Some(("sign", sub_matches)) => Self::parse_sign(sub_matches, quiet),
+            Some(("verify", sub_matches)) => Self::parse_verify(sub_matches, quiet),
             _ => Err(SignerError::Config(
                 "No subcommand provided. Use 'sign' or 'verify'.".into(),
             )),
         }
     }
 
-    fn parse_sign(matches: &ArgMatches) -> Result<Self, SignerError> {
+    fn parse_sign(matches: &ArgMatches, quiet: bool) -> Result<Self, SignerError> {
         let input_str = matches.get_one::<String>("input").unwrap();
         let (input_path, input_temp_file) = if input_str == "-" {
             let mut temp = NamedTempFile::new().map_err(|e| {
@@ -105,11 +108,12 @@ impl Config {
             cert_path,
             overwrite,
             is_stdout,
+            quiet,
             _input_temp_file: input_temp_file,
         })
     }
 
-    fn parse_verify(matches: &ArgMatches) -> Result<Self, SignerError> {
+    fn parse_verify(matches: &ArgMatches, quiet: bool) -> Result<Self, SignerError> {
         let input_path = PathBuf::from(matches.get_one::<String>("input").unwrap());
         if !input_path.exists() {
             return Err(SignerError::Config(format!(
@@ -137,6 +141,7 @@ impl Config {
             cert_path,
             overwrite: false,
             is_stdout: false,
+            quiet,
             _input_temp_file: None,
         })
     }

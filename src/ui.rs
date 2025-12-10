@@ -1,17 +1,19 @@
 /*
  * ZipSigner Rust v1.0.0
- * Copyright (c) 2024 Tiash / @MrCarb0n and Earth Inc.
+ * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
  * Licensed under the MIT License.
  */
 
-use crate::{APP_NAME, APP_VERSION};
+use crate::{APP_AUTHOR, APP_NAME, APP_VERSION};
 
 // ANSI Color Codes
 const COLOR_RED: &str = "31";
 const COLOR_GREEN: &str = "32";
 const COLOR_YELLOW: &str = "33";
 const COLOR_BLUE: &str = "34";
+const COLOR_CYAN: &str = "36";
 const COLOR_DIM: &str = "2";
+const COLOR_BOLD: &str = "1";
 
 pub struct Ui {
     verbose: bool,
@@ -34,8 +36,8 @@ impl Ui {
         }
     }
 
-    fn paint(&self, icon: &str, msg: &str, color: &str, is_error: bool, is_dim: bool) {
-        if self.silent {
+    fn paint(&self, icon: &str, msg: &str, color: &str, _is_error: bool, is_dim: bool) {
+        if self.silent && !_is_error {
             return;
         }
 
@@ -50,37 +52,59 @@ impl Ui {
             format!("{} {}", icon, msg)
         };
 
-        if is_error {
-            eprintln!("{}", formatted);
-        } else {
-            println!("{}", formatted);
-        }
+        eprintln!("{}", formatted);
     }
 
     pub fn print_banner(&self) {
-        // Banner only shows in verbose mode
         if self.silent || !self.verbose {
             return;
         }
-        let title = format!("{} v{}", APP_NAME, APP_VERSION);
-        let width = title.len() + 4;
+        self.print_rich_banner();
+    }
+
+    pub fn print_rich_banner(&self) {
+        let title = format!(" {} v{} ", APP_NAME, APP_VERSION);
+        let width = title.len();
         let border = "-".repeat(width);
 
-        println!("+{}+", border);
-        println!("|  {}  |", title);
-        println!("+{}+", border);
+        // Print empty line first to separate from any piped output
+        eprintln!();
+
+        if self.colors {
+            eprintln!("\x1b[{}m+-{}-+\x1b[0m", COLOR_CYAN, border);
+            eprintln!(
+                "\x1b[{}m| \x1b[{}m{}\x1b[{}m |\x1b[0m",
+                COLOR_CYAN, COLOR_BOLD, title, COLOR_CYAN
+            );
+            eprintln!("\x1b[{}m+-{}-+\x1b[0m", COLOR_CYAN, border);
+        } else {
+            eprintln!("+-{}-+", border);
+            eprintln!("| {} |", title);
+            eprintln!("+-{}-+", border);
+        }
+    }
+
+    pub fn print_version_info(&self) {
+        self.print_rich_banner();
+        eprintln!();
+        println!("Author:      {}", APP_AUTHOR);
+        println!("Repository:  https://github.com/MrCarb0n/zipsignerust");
+        println!("License:     MIT");
+        println!("Description: High-performance cryptographic signer.");
     }
 
     pub fn print_mode_header(&self, title: &str) {
-        // Mode header only shows in verbose mode
         if self.silent || !self.verbose {
             return;
         }
-        println!("\n-- {} --", title);
+        if self.colors {
+            eprintln!("\n\x1b[{}m-- {} --\x1b[0m", COLOR_DIM, title);
+        } else {
+            eprintln!("\n-- {} --", title);
+        }
     }
 
     pub fn info(&self, msg: &str) {
-        // Standard info is hidden in default mode, only shown in verbose
         if !self.verbose {
             return;
         }
@@ -88,42 +112,43 @@ impl Ui {
     }
 
     pub fn verbose(&self, msg: &str) {
-        // Verbose info only shown in verbose mode
         if self.verbose {
-            self.paint("[v]", msg, "0", false, true);
+            self.paint("[v]", msg, COLOR_DIM, false, true);
         }
     }
 
     pub fn success(&self, msg: &str) {
-        // Always shown unless silent
+        if self.silent {
+            return;
+        }
         self.paint("[+]", msg, COLOR_GREEN, false, false);
     }
 
     pub fn warn(&self, msg: &str) {
-        // Always shown unless silent
+        if self.silent {
+            return;
+        }
         self.paint("[!]", msg, COLOR_YELLOW, true, false);
     }
 
     pub fn error(&self, msg: &str) {
-        // Always shown
         self.paint("[x]", msg, COLOR_RED, true, false);
     }
 
     pub fn print_summary(&self, title: &str, fields: &[(&str, String)]) {
-        // Summary hidden in default mode to keep it minimal
         if self.silent || !self.verbose {
             return;
         }
-        println!();
+        eprintln!();
         if self.colors {
-            println!("\x1b[1m{}:\x1b[0m", title);
+            eprintln!("\x1b[1m{}:\x1b[0m", title);
         } else {
-            println!("{}:", title);
+            eprintln!("{}:", title);
         }
 
         for (key, val) in fields {
-            println!("  {:<15} {}", key, val);
+            eprintln!("  {:<15} {}", key, val);
         }
-        println!();
+        eprintln!();
     }
 }
