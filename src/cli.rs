@@ -8,7 +8,7 @@ use crate::{
     config::{self, Config},
     error::SignerError,
     signing::{self, KeyChain},
-    ui,
+    ui::Ui,
     verification::ArtifactVerifier,
     *,
 };
@@ -33,11 +33,11 @@ pub fn run() -> Result<(), SignerError> {
         .about(APP_ABOUT)
         .help_template("{about-with-newline}{usage-heading} {usage}\n\n{all-args}\n")
         .subcommand_required(true)
-        .arg_required_else_help(true) // Show help if no subcommand provided
+        .arg_required_else_help(true)
         .subcommand(
             Command::new("sign")
                 .about("Sign a ZIP/APK/JAR archive")
-                .arg_required_else_help(true) // <--- ADDED: Show help if 'sign' has no args
+                .arg_required_else_help(true)
                 .arg(
                     Arg::new("input")
                         .required(true)
@@ -79,7 +79,7 @@ pub fn run() -> Result<(), SignerError> {
         .subcommand(
             Command::new("verify")
                 .about("Verify the signature of an archive")
-                .arg_required_else_help(true) // <--- ADDED: Show help if 'verify' has no args
+                .arg_required_else_help(true)
                 .arg(
                     Arg::new("input")
                         .required(true)
@@ -102,15 +102,17 @@ pub fn run() -> Result<(), SignerError> {
         )
         .get_matches();
 
-    ui::set_colors(true);
-    ui::print_banner();
+    // Initialize UI state
+    let verbose = matches.get_flag("verbose");
+    let ui = Ui::new(verbose, false, true);
 
-    run_logic(&matches)
+    ui.print_banner();
+
+    run_logic(&matches, &ui)
 }
 
-fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
+fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
     let mut config = Config::from_matches(matches)?;
-    ui::set_verbose(matches.get_flag("verbose"));
 
     let output_temp_file = if config.is_stdout {
         Some(NamedTempFile::new().map_err(|e| {
@@ -126,24 +128,25 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
 
     match config.mode {
         config::Mode::Verify => {
-            let key_chain = KeyChain::new(None, config.cert_path.as_deref())?;
+            let key_chain = KeyChain::new(None, config.cert_path.as_deref(), ui)?;
 
-            ui::print_mode_header("VERIFICATION MODE");
-            ui::log_info(&format!(
+            ui.print_mode_header("VERIFICATION MODE");
+            ui.info(&format!(
                 "Verifying integrity of: `{}`",
                 config.input_path.display()
             ));
+            
             if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
-                ui::log_success("Signature is valid. The artifact is authentic.");
+                ui.success("Signature is valid. The artifact is authentic.");
             }
         }
         config::Mode::Sign { inplace } => {
-            ui::log_info("Loading cryptographic keys...");
-            let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref())?;
+            ui.info("Loading cryptographic keys...");
+            let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
-            ui::print_mode_header("SIGNING MODE");
-            ui::log_info(&format!("Source: `{}`", config.input_path.display()));
-            ui::log_info(&format!("Target: `{}`", config.output_path.display()));
+            ui.print_mode_header("SIGNING MODE");
+            ui.info(&format!("Source: `{}`", config.input_path.display()));
+            ui.info(&format!("Target: `{}`", config.output_path.display()));
 
             if config.output_path.exists() && !inplace && !config.overwrite && !config.is_stdout {
                 return Err(SignerError::Config(format!(
@@ -152,16 +155,17 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
                 )));
             }
 
-            ui::log_info("Parsing archive and computing file digests...");
+            ui.info("Parsing archive and computing file digests...");
             let nested = signing::ArtifactProcessor::compute_digests_prepare_nested(
                 &config.input_path,
                 &key_chain,
+                ui,
             )?;
 
             let working_input = if inplace {
                 let backup = config.input_path.with_extension("bak");
                 std::fs::rename(&config.input_path, &backup)?;
-                ui::log_warn(&format!(
+                ui.warn(&format!(
                     "Original file backed up to: `{}`",
                     backup.display()
                 ));
@@ -170,43 +174,52 @@ fn run_logic(matches: &clap::ArgMatches) -> Result<(), SignerError> {
                 config.input_path.clone()
             };
 
-            ui::log_info("Generating signature and writing signed archive...");
+            ui.info("Generating signature and writing signed archive...");
             match signing::ArtifactProcessor::write_signed_zip_with_sources(
                 &working_input,
                 &config.output_path,
                 &key_chain,
                 &nested.digests,
                 &nested.nested_sources,
+                ui,
             ) {
                 Ok(_) => {
                     if inplace {
                         std::fs::remove_file(&working_input)?;
-                        ui::log_success(&format!(
-                            "In-place signing complete. Original file preserved at `{}`.",
-                            working_input.display()
-                        ));
+                        ui.success("In-place signing complete.");
+                        
+                        ui.print_summary("Signing Report", &[
+                            ("Status", "Success".to_string()),
+                            ("Mode", "In-Place".to_string()),
+                            ("File", config.input_path.display().to_string()),
+                        ]);
                     } else if config.is_stdout {
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
                         io::copy(&mut file, &mut stdout)?;
                     } else {
-                        ui::log_success(&format!(
-                            "Signed archive successfully created at: `{}`",
-                            config.output_path.display()
-                        ));
+                        ui.success("Archive successfully signed.");
+                        
+                        let key_type = if config.key_path.is_some() { "Custom (PEM)" } else { "Embedded (Test)" };
+                        
+                        ui.print_summary("Signing Report", &[
+                            ("Status", "Success".to_string()),
+                            ("Mode", "Standard".to_string()),
+                            ("Input", config.input_path.display().to_string()),
+                            ("Output", config.output_path.display().to_string()),
+                            ("Key Used", key_type.to_string()),
+                        ]);
                     }
                 }
                 Err(e) => {
                     if inplace {
                         match std::fs::rename(&working_input, &config.input_path) {
                             Ok(_) => {
-                                ui::log_error_detail(
-                                    "Original file has been restored from backup.",
-                                );
+                                ui.error("Original file has been restored from backup.");
                                 return Err(e);
                             }
                             Err(restore_err) => {
-                                ui::log_error(&format!(
+                                ui.error(&format!(
                                     "CRITICAL: Failed to restore backup after error: {}",
                                     restore_err
                                 ));

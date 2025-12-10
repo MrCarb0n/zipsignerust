@@ -7,11 +7,13 @@
  */
 
 use zipsignerust::cli;
-use zipsignerust::ui;
+use zipsignerust::ui::Ui;
 
 fn main() {
     if let Err(e) = cli::run() {
-        ui::log_structured_error(&e);
+        // Create a default UI just for logging the error cleanly
+        let ui = Ui::default();
+        ui.error(&format!("{}", e));
         std::process::exit(1);
     }
 }

@@ -4,137 +4,119 @@
  * Licensed under the MIT License.
  */
 
-use crate::{error::SignerError, APP_NAME, APP_VERSION};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{APP_NAME, APP_VERSION};
 
 // ANSI Color Codes
 const COLOR_RED: &str = "31";
 const COLOR_GREEN: &str = "32";
 const COLOR_YELLOW: &str = "33";
 const COLOR_BLUE: &str = "34";
+const COLOR_DIM: &str = "2";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
+pub struct Ui {
+    verbose: bool,
+    silent: bool,
+    colors: bool,
 }
 
-// Simplified output: text only
-
-static VERBOSE: AtomicBool = AtomicBool::new(false);
-static SILENT: AtomicBool = AtomicBool::new(false);
-static COLORS: AtomicBool = AtomicBool::new(true);
-
-// Minimal mode: no timestamp/pid
-
-fn enabled(_l: LogLevel, is_error: bool, essential: bool) -> bool {
-    if SILENT.load(Ordering::Relaxed) {
-        return false;
-    }
-    if is_error {
-        return true;
-    }
-    if VERBOSE.load(Ordering::Relaxed) {
-        return true;
-    }
-    essential
-}
-
-// Audit disabled
-
-fn ascii_icon(level: &str) -> &'static str {
-    match level {
-        "INFO" => "[i]",
-        "OK" => "[v]",
-        "WARN" => "[!]",
-        "ERROR" => "[X]",
-        "DETAIL" => "[>]",
-        _ => "[.]",
+impl Default for Ui {
+    fn default() -> Self {
+        Self::new(false, false, true)
     }
 }
 
-fn paint(level: &str, msg: &str, color: &str, is_error: bool) {
-    let icon = ascii_icon(level);
-    let icon_render = if COLORS.load(Ordering::Relaxed) {
-        format!("\x1b[{}m{}\x1b[0m", color, icon)
-    } else {
-        icon.to_string()
-    };
-    let line = format!("{} {}", icon_render, msg);
-    if is_error {
-        eprintln!("{}", line);
-    } else {
-        println!("{}", line);
+impl Ui {
+    pub fn new(verbose: bool, silent: bool, colors: bool) -> Self {
+        Self {
+            verbose,
+            silent,
+            colors,
+        }
     }
-}
 
-pub fn print_banner() {
-    if SILENT.load(Ordering::Relaxed) || !VERBOSE.load(Ordering::Relaxed) {
-        return;
+    fn paint(&self, icon: &str, msg: &str, color: &str, is_error: bool, is_dim: bool) {
+        if self.silent {
+            return;
+        }
+
+        let formatted = if self.colors {
+            let style = if is_dim {
+                format!("\x1b[{}m", COLOR_DIM)
+            } else {
+                "".to_string()
+            };
+            format!("{}\x1b[{}m{}\x1b[0m {}", style, color, icon, msg)
+        } else {
+            format!("{} {}", icon, msg)
+        };
+
+        if is_error {
+            eprintln!("{}", formatted);
+        } else {
+            println!("{}", formatted);
+        }
     }
-    let title = format!("{} v{}", APP_NAME, APP_VERSION);
-    let width = title.len() + 4;
-    let top = format!("+{}+", "-".repeat(width));
-    let mid = format!("|  {}  |", title);
-    let bot = top.clone();
-    println!("{}", top);
-    println!("{}", mid);
-    println!("{}", bot);
-}
 
-pub fn print_mode_header(title: &str) {
-    if SILENT.load(Ordering::Relaxed) || !VERBOSE.load(Ordering::Relaxed) {
-        return;
+    pub fn print_banner(&self) {
+        // Banner only shows in verbose mode
+        if self.silent || !self.verbose {
+            return;
+        }
+        let title = format!("{} v{}", APP_NAME, APP_VERSION);
+        let width = title.len() + 4;
+        let border = "-".repeat(width);
+        
+        println!("+{}+", border);
+        println!("|  {}  |", title);
+        println!("+{}+", border);
     }
-    let line = format!("-- {} --", title);
-    println!("{}", line);
-}
 
-pub fn log_info(msg: &str) {
-    if enabled(LogLevel::Info, false, false) {
-        paint("INFO", msg, COLOR_BLUE, false);
+    pub fn print_mode_header(&self, title: &str) {
+        // Mode header only shows in verbose mode
+        if self.silent || !self.verbose {
+            return;
+        }
+        println!("\n-- {} --", title);
     }
-}
 
-pub fn log_success(msg: &str) {
-    if enabled(LogLevel::Info, false, true) {
-        paint("OK", msg, COLOR_GREEN, false);
+    pub fn info(&self, msg: &str) {
+        // Standard info: "[i]" in blue
+        self.paint("[i]", msg, COLOR_BLUE, false, false);
     }
-}
 
-pub fn log_warn(msg: &str) {
-    if enabled(LogLevel::Warn, false, false) {
-        paint("WARN", msg, COLOR_YELLOW, false);
+    pub fn verbose(&self, msg: &str) {
+        // Verbose info: "[v]" in dim style, only if verbose is on
+        if self.verbose {
+            self.paint("[v]", msg, "0", false, true);
+        }
     }
-}
 
-pub fn log_error(msg: &str) {
-    if enabled(LogLevel::Error, true, false) {
-        paint("ERROR", msg, COLOR_RED, true);
+    pub fn success(&self, msg: &str) {
+        self.paint("[+]", msg, COLOR_GREEN, false, false);
     }
-}
 
-pub fn log_error_detail(msg: &str) {
-    if enabled(LogLevel::Error, true, false) {
-        paint("DETAIL", msg, COLOR_RED, true);
+    pub fn warn(&self, msg: &str) {
+        self.paint("[!]", msg, COLOR_YELLOW, true, false);
     }
-}
 
-pub fn set_verbose(v: bool) {
-    VERBOSE.store(v, Ordering::Relaxed);
-}
+    pub fn error(&self, msg: &str) {
+        self.paint("[x]", msg, COLOR_RED, true, false);
+    }
 
-pub fn set_silent(s: bool) {
-    SILENT.store(s, Ordering::Relaxed);
-}
-pub fn is_silent() -> bool {
-    SILENT.load(Ordering::Relaxed)
-}
-pub fn set_colors(c: bool) {
-    COLORS.store(c, Ordering::Relaxed);
-}
-
-pub fn log_structured_error(err: &SignerError) {
-    paint("ERROR", &err.to_string(), COLOR_RED, true);
+    pub fn print_summary(&self, title: &str, fields: &[(&str, String)]) {
+        if self.silent {
+            return;
+        }
+        println!(); 
+        if self.colors {
+            println!("\x1b[1m{}:\x1b[0m", title);
+        } else {
+            println!("{}:", title);
+        }
+        
+        for (key, val) in fields {
+            println!("  {:<15} {}", key, val);
+        }
+        println!();
+    }
 }

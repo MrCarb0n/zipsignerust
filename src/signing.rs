@@ -28,7 +28,7 @@ use zip::{
 };
 
 use crate::{
-    error::SignerError, ui, APP_NAME, BUFFER_SIZE, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    error::SignerError, ui::Ui, APP_NAME, BUFFER_SIZE, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 
 const RSA_SIGNATURE_SCHEME: &dyn signature::RsaEncoding = &signature::RSA_PKCS1_SHA256;
@@ -66,9 +66,9 @@ pub struct KeyChain {
 }
 
 impl KeyChain {
-    pub fn new(priv_path: Option<&Path>, pub_path: Option<&Path>) -> Result<Self, SignerError> {
+    pub fn new(priv_path: Option<&Path>, pub_path: Option<&Path>, ui: &Ui) -> Result<Self, SignerError> {
         let private_key = if let Some(path) = priv_path {
-            Self::check_key_permissions(path)?;
+            Self::check_key_permissions(path, ui)?;
             let pem_data = fs::read(path)?;
             let pem = pem_crate::parse(pem_data)?;
             RsaKeyPair::from_pkcs8(&pem.contents)
@@ -89,7 +89,7 @@ impl KeyChain {
                 .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?
                 .1;
             let pk_der = cert.public_key().subject_public_key.data.to_vec();
-            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
+            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
             (
                 Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
                 nb,
@@ -101,7 +101,7 @@ impl KeyChain {
                 .map_err(|e| SignerError::Config(format!("Invalid default certificate: {:?}", e)))?
                 .1;
             let pk_der = cert.public_key().subject_public_key.data.to_vec();
-            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before));
+            let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
             (
                 Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
                 nb,
@@ -130,23 +130,40 @@ impl KeyChain {
     }
 
     #[cfg(unix)]
-    fn check_key_permissions(path: &Path) -> Result<(), SignerError> {
+    fn check_key_permissions(path: &Path, ui: &Ui) -> Result<(), SignerError> {
         use std::os::unix::fs::PermissionsExt;
         let metadata = std::fs::metadata(path)?;
         let permissions = metadata.permissions().mode();
         if permissions & 0o077 != 0 {
-            eprintln!(
-                "Warning: Private key '{}' is accessible by others (mode {:o}).",
+            ui.warn(&format!(
+                "Private key '{}' is accessible by others (mode {:o}).",
                 path.display(),
                 permissions
-            );
+            ));
         }
         Ok(())
     }
 
     #[cfg(not(unix))]
-    fn check_key_permissions(_path: &Path) -> Result<(), SignerError> {
+    fn check_key_permissions(_path: &Path, _ui: &Ui) -> Result<(), SignerError> {
         Ok(())
+    }
+
+    fn asn1_to_zip_datetime(asn1: ASN1Time, ui: &Ui) -> DateTime {
+        let dt = asn1.to_datetime();
+
+        // Force interpretation as UTC components directly
+        let year = dt.year() as u16;
+        let month = dt.month() as u8;
+        let day = dt.day();
+        let hour = dt.hour();
+        let minute = dt.minute();
+        let second = dt.second();
+
+        DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
+            ui.error("Failed to create DateTime. Fallback to 1980-01-01 00:00:00 UTC.");
+            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+        })
     }
 }
 
@@ -196,6 +213,7 @@ impl ArtifactProcessor {
     pub fn compute_digests_prepare_nested(
         path: &Path,
         keys: &KeyChain,
+        ui: &Ui,
     ) -> Result<NestedDigests, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
@@ -230,7 +248,7 @@ impl ArtifactProcessor {
                 }
 
                 let nested_digests = Self::compute_manifest_digests(&nested_src)?;
-                Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests)?;
+                Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
 
                 let nested_bytes = fs::read(&nested_signed)?;
                 let digest = CryptoEngine::compute_sha1(&nested_bytes);
@@ -253,10 +271,11 @@ impl ArtifactProcessor {
         output: &Path,
         keys: &KeyChain,
         digests: &BTreeMap<String, String>,
+        ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        ui::log_info(&format!(
-            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC)",
+        ui.verbose(&format!(
+            "Timestamp used: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
             timestamp.year(),
             timestamp.month(),
             timestamp.day(),
@@ -300,8 +319,8 @@ impl ArtifactProcessor {
 
                 writer.start_file(&name, options)?;
                 if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
-                    ui::log_info(&format!(
-                        "Found nested archive: `{}` (signing recursively)",
+                    ui.info(&format!(
+                        "Signing nested archive: `{}`",
                         name
                     ));
                     let tmpdir = tempdir()?;
@@ -324,14 +343,14 @@ impl ArtifactProcessor {
                     }
 
                     let nested_digests = Self::compute_manifest_digests(&nested_src)?;
-                    Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests)?;
+                    Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
 
                     // Use UTC logic for filesystem timestamp
                     let ft =
                         FileTime::from_unix_time(Self::zip_datetime_to_unix(&timestamp) as i64, 0);
                     set_file_times(&nested_signed, ft, ft)?;
-                    ui::log_info(&format!(
-                        "Set filesystem mtime on nested archive: `{}`",
+                    ui.verbose(&format!(
+                        "Set mtime on nested archive: `{}`",
                         nested_signed.display()
                     ));
 
@@ -358,8 +377,8 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui::log_info(&format!(
-            "Set filesystem mtime (current) on output archive: `{}`",
+        ui.verbose(&format!(
+            "Set mtime on output: `{}`",
             output.display()
         ));
         Self::verify_zip_integrity(output)?;
@@ -372,10 +391,11 @@ impl ArtifactProcessor {
         keys: &KeyChain,
         digests: &BTreeMap<String, String>,
         nested_sources: &BTreeMap<String, Vec<u8>>,
+        ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        ui::log_info(&format!(
-            "Applying certificate creation timestamp: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC)",
+        ui.verbose(&format!(
+            "Timestamp used: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
             timestamp.year(),
             timestamp.month(),
             timestamp.day(),
@@ -418,7 +438,7 @@ impl ArtifactProcessor {
                 writer.start_file(&name, options)?;
 
                 if let Some(nested_bytes) = nested_sources.get(&name) {
-                    ui::log_info(&format!("Embedding signed nested archive: `{}`", name));
+                    ui.info(&format!("Embedding signed nested archive: `{}`", name));
                     writer.write_all(nested_bytes)?;
                 } else {
                     loop {
@@ -436,8 +456,8 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui::log_info(&format!(
-            "Set filesystem mtime (current) on output archive: `{}`",
+        ui.verbose(&format!(
+            "Set mtime on output: `{}`",
             output.display()
         ));
         Self::verify_zip_integrity(output)?;
@@ -564,26 +584,5 @@ impl ArtifactProcessor {
 
         // Ensure strictly UTC conversion
         ndt.and_utc().timestamp().max(0) as u64
-    }
-}
-
-impl KeyChain {
-    fn asn1_to_zip_datetime(asn1: ASN1Time) -> DateTime {
-        let dt = asn1.to_datetime();
-
-        // Force interpretation as UTC components directly
-        let year = dt.year() as u16;
-        let month = dt.month() as u8;
-        let day = dt.day();
-        let hour = dt.hour();
-        let minute = dt.minute();
-        let second = dt.second();
-
-        DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
-            ui::log_error(&format!(
-                "Failed to create DateTime. Fallback to 1980-01-01 00:00:00 UTC."
-            ));
-            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
-        })
     }
 }
