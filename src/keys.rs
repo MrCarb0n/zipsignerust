@@ -4,11 +4,9 @@
  * Licensed under the MIT License.
  */
 
-use ::pem as pem_crate;
 use crate::{error::SignerError, ui::Ui};
-use ring::{
-    signature::{self, RsaKeyPair, UnparsedPublicKey},
-};
+use ::pem as pem_crate;
+use ring::signature::{self, RsaKeyPair, UnparsedPublicKey};
 use std::{fs, path::Path};
 use x509_parser::prelude::*;
 use zip::DateTime;

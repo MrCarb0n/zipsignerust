@@ -4,15 +4,25 @@
  * Licensed under the MIT License.
  */
 
+//! Error types and handling for the ZipSigner library.
+//! Defines all possible errors that can occur during ZIP signing operations.
+
 use std::{fmt, io};
 
+/// Comprehensive error type for all signing operations.
 #[derive(Debug)]
 pub enum SignerError {
+    /// I/O errors during file operations
     Io(io::Error),
+    /// ZIP format errors during archive processing
     Zip(zip::result::ZipError),
+    /// Cryptographic operation errors
     Ring(ring::error::Unspecified),
+    /// PEM format parsing errors
     Pem(pem::PemError),
+    /// Validation failures during signature checking
     Validation(String),
+    /// Configuration or setup errors
     Config(String),
 }
 
@@ -21,10 +31,10 @@ impl fmt::Display for SignerError {
         match self {
             SignerError::Io(e) => write!(f, "I/O Error: {}", e),
             SignerError::Zip(e) => write!(f, "ZIP Error: {}", e),
-            SignerError::Ring(e) => write!(f, "Cryptography Error: {:?}", e),
+            SignerError::Ring(e) => write!(f, "Cryptography Error: {}", e),
             SignerError::Pem(e) => write!(f, "PEM Parsing Error: {}", e),
-            SignerError::Validation(s) => write!(f, "Validation Failed: {}", s),
-            SignerError::Config(s) => write!(f, "Config Error: {}", s),
+            SignerError::Validation(s) => write!(f, "Validation Error: {}", s),
+            SignerError::Config(s) => write!(f, "Configuration Error: {}", s),
         }
     }
 }

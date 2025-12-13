@@ -4,12 +4,12 @@
  * Licensed under the MIT License.
  */
 
+//! ZIP archive processing and signing functionality.
+//! Handles manifest generation, nested archive signing, and ZIP integrity verification.
+
 use crate::{
-    crypto::CryptoEngine,
-    error::SignerError,
-    keys::KeyChain,
-    ui::Ui,
-    APP_NAME, BUFFER_SIZE, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    crypto::CryptoEngine, error::SignerError, keys::KeyChain, ui::Ui, APP_NAME, BUFFER_SIZE,
+    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 use crc32fast::Hasher as Crc32;
 use filetime::{set_file_times, FileTime};
@@ -31,17 +31,25 @@ thread_local! {
     static PROCESSING_BUFFER: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; BUFFER_SIZE]);
 }
 
+/// Container for digests and nested file data during signing process.
 #[derive(Debug)]
 pub struct NestedDigests {
+    /// Map of file paths to their SHA1 digests
     pub digests: BTreeMap<String, String>,
+    /// Map of nested archive paths to their processed content
     pub nested_files: BTreeMap<String, Vec<u8>>,
 }
 
+/// Core processor for ZIP signing operations including manifest generation,
+/// nested archive handling, and integrity verification.
 pub struct ArtifactProcessor;
 
 impl ArtifactProcessor {
     /// Calculate hashes for all files in archive
-    pub fn compute_manifest_digests(path: &Path, _ui: &Ui) -> Result<BTreeMap<String, String>, SignerError> {
+    pub fn compute_manifest_digests(
+        path: &Path,
+        _ui: &Ui,
+    ) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
         let len = archive.len();
@@ -62,7 +70,7 @@ impl ArtifactProcessor {
             .map(|name| {
                 let file = File::open(path)?;
                 let mut local_archive = ZipArchive::new(BufReader::new(file))?;
-                
+
                 let mut zip_file = local_archive.by_name(&name)?;
                 let digest = CryptoEngine::compute_stream_sha1(&mut zip_file)?;
                 Ok((name, digest))
@@ -199,7 +207,7 @@ impl ArtifactProcessor {
                                 .truncate(true)
                                 .open(&nested_src)?;
                             loop {
-                                let n = file.read(&mut *buf)?;
+                                let n = file.read(&mut buf)?;
                                 if n == 0 {
                                     break;
                                 }
@@ -208,11 +216,19 @@ impl ArtifactProcessor {
                         }
 
                         let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
-                        Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
+                        Self::write_signed_zip(
+                            &nested_src,
+                            &nested_signed,
+                            keys,
+                            &nested_digests,
+                            ui,
+                        )?;
 
                         // Use UTC logic for filesystem timestamp
-                        let ft =
-                            FileTime::from_unix_time(Self::zip_datetime_to_unix(&timestamp) as i64, 0);
+                        let ft = FileTime::from_unix_time(
+                            Self::zip_datetime_to_unix(&timestamp) as i64,
+                            0,
+                        );
                         set_file_times(&nested_signed, ft, ft)?;
                         ui.verbose(&format!(
                             "mtime set on nested archive: {}",
@@ -221,7 +237,7 @@ impl ArtifactProcessor {
 
                         let mut nested_file = BufReader::new(File::open(&nested_signed)?);
                         loop {
-                            let n = nested_file.read(&mut *buf)?;
+                            let n = nested_file.read(&mut buf)?;
                             if n == 0 {
                                 break;
                             }
@@ -229,7 +245,7 @@ impl ArtifactProcessor {
                         }
                     } else {
                         loop {
-                            let n = file.read(&mut *buf)?;
+                            let n = file.read(&mut buf)?;
                             if n == 0 {
                                 break;
                             }
@@ -293,7 +309,7 @@ impl ArtifactProcessor {
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
-        
+
         // Use thread-local buffer to avoid allocations in the hot path
         PROCESSING_BUFFER.with(|local_buf| {
             let mut buf = local_buf.borrow_mut();
@@ -318,7 +334,7 @@ impl ArtifactProcessor {
                         writer.write_all(nested_bytes)?;
                     } else {
                         loop {
-                            let n = file.read(&mut *buf)?;
+                            let n = file.read(&mut buf)?;
                             if n == 0 {
                                 break;
                             }
@@ -386,7 +402,7 @@ impl ArtifactProcessor {
         let estimated_size = 50 + // Initial manifest headers
             digests.len() * 100 + // Approximate size per entry
             digests.values().map(|h| h.len()).sum::<usize>();
-        
+
         let mut out = Vec::with_capacity(estimated_size);
         out.extend_from_slice(b"Manifest-Version: 1.0\r\n");
         Self::write_manifest_line(&mut out, "Created-By", APP_NAME);
@@ -417,10 +433,9 @@ impl ArtifactProcessor {
     }
 
     fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
-        let key_pair = keys
-            .private_key
-            .as_ref()
-            .ok_or(SignerError::Config("Private key missing for signing".into()))?;
+        let key_pair = keys.private_key.as_ref().ok_or(SignerError::Config(
+            "Private key missing for signing".into(),
+        ))?;
         let mut signature = vec![0u8; key_pair.public().modulus_len()];
         let rng = ring::rand::SystemRandom::new();
         let rsa_signature_scheme = crate::keys::RSA_SIGNATURE_SCHEME;

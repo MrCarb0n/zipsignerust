@@ -12,8 +12,8 @@
 
 pub mod cli;
 pub mod config;
-pub mod error;
 pub mod crypto;
+pub mod error;
 pub mod keys;
 pub mod processor;
 pub mod signing;
