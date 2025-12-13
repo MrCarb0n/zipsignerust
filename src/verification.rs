@@ -14,10 +14,11 @@ use crate::{
     CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 
-/// Verifies RSA signatures on signed ZIP/APK/JAR archives.
+/// Verifies signatures on Android archive files
 pub struct ArtifactVerifier;
 
 impl ArtifactVerifier {
+    /// Check if an archive's signature is valid
     pub fn verify(path: &std::path::Path, keys: &KeyChain) -> Result<bool, SignerError> {
         let public_key = keys.public_key.as_ref().ok_or(SignerError::Config(
             "Public Key Missing for verification".into(),
@@ -105,7 +106,6 @@ impl ArtifactVerifier {
             }
         }
 
-        // Fixed: Use .keys() for cleaner iteration
         for name in manifest_entries.keys() {
             if !file_map.contains_key(name) {
                 return Err(SignerError::Validation(format!(
@@ -136,7 +136,6 @@ impl ArtifactVerifier {
         let mut out: Vec<String> = Vec::new();
         for line in s.split("\r\n") {
             if let Some(last) = out.last_mut() {
-                // Fixed: Use strip_prefix instead of manual slice
                 if let Some(stripped) = line.strip_prefix(' ') {
                     last.push_str(stripped);
                     continue;

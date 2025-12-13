@@ -118,14 +118,18 @@ pub fn run() -> Result<(), SignerError> {
         .get_matches();
 
     if matches.get_flag("version_custom") {
-        let ui = Ui::new(false, false, true);
+        let mut ui = Ui::new(false, false, true);
+        ui.enable_colors_if_supported();
         ui.print_version_info();
         return Ok(());
     }
 
     let verbose = matches.get_flag("verbose");
     let quiet = matches.get_flag("quiet");
-    let ui = Ui::new(verbose, quiet, true);
+    let mut ui = Ui::new(verbose, quiet, true);
+
+    // Enable colors if supported on the platform
+    ui.enable_colors_if_supported();
 
     ui.print_banner();
 
@@ -213,7 +217,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 &config.output_path,
                 &key_chain,
                 &nested.digests,
-                &nested.nested_sources,
+                &nested.nested_files,
                 ui,
             ) {
                 Ok(_) => {

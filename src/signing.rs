@@ -39,11 +39,13 @@ const RSA_VERIFICATION_ALGORITHM: &'static dyn signature::VerificationAlgorithm 
 pub struct CryptoEngine;
 
 impl CryptoEngine {
+    /// Calculate SHA1 hash for data
     pub fn compute_sha1(data: &[u8]) -> String {
         let digest = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, data);
         base64_engine.encode(digest.as_ref())
     }
 
+    /// Calculate SHA1 hash while reading from a stream
     pub fn compute_stream_sha1<R: Read>(reader: &mut R) -> Result<String, SignerError> {
         let mut context = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
         let mut buffer = [0u8; BUFFER_SIZE];
@@ -65,10 +67,10 @@ pub struct KeyChain {
     pub cert_not_before: Option<DateTime>,
 }
 
-// Type alias to satisfy clippy::type-complexity
 type LoadedPublicKey = (Option<UnparsedPublicKey<Vec<u8>>>, Option<DateTime>);
 
 impl KeyChain {
+    /// Load signing keys from files or use defaults
     pub fn new(
         priv_path: Option<&Path>,
         pub_path: Option<&Path>,
@@ -102,12 +104,12 @@ impl KeyChain {
         let key_pair = if let Ok(pem) = pem_crate::parse(&content) {
             // It's PEM
             RsaKeyPair::from_pkcs8(pem.contents())
-                .map_err(|e| SignerError::Config(format!("Invalid PEM Private Key: {}", e)))?
+                .map_err(|e| SignerError::Config(format!("Invalid PEM private key: {}", e)))?
         } else {
             // Assume it's raw DER (PK8) if PEM parsing fails
             ui.verbose("Input is not PEM, attempting to parse as binary PK8/DER...");
             RsaKeyPair::from_pkcs8(&content)
-                .map_err(|e| SignerError::Config(format!("Invalid PK8/DER Private Key: {}", e)))?
+                .map_err(|e| SignerError::Config(format!("Invalid private key format: {}", e)))?
         };
 
         Ok(Some(key_pair))
@@ -130,7 +132,7 @@ impl KeyChain {
         };
 
         let (_, cert) = X509Certificate::from_der(&cert_der)
-            .map_err(|e| SignerError::Config(format!("Invalid certificate: {:?}", e)))?;
+            .map_err(|e| SignerError::Config(format!("Invalid certificate: {}", e)))?;
 
         let pk_der = cert.public_key().subject_public_key.data.to_vec();
         let nb = Some(Self::asn1_to_zip_datetime(cert.validity().not_before, ui));
@@ -172,15 +174,12 @@ impl KeyChain {
     fn asn1_to_zip_datetime(asn1: ASN1Time, ui: &Ui) -> DateTime {
         let dt = asn1.to_datetime();
 
-        // 1. Clamp minimal year to 1980 (ZIP Epoch).
-        // This fixes the issue where 1996 keys were being bumped to 2008.
         let year = (dt.year() as u16).clamp(1980, 2107);
 
         let month = dt.month() as u8;
         let day = dt.day();
         let hour = dt.hour();
         let minute = dt.minute();
-        // ZIP seconds are divided by 2
         let second = dt.second();
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
@@ -194,11 +193,12 @@ pub struct ArtifactProcessor;
 
 pub struct NestedDigests {
     pub digests: BTreeMap<String, String>,
-    pub nested_sources: BTreeMap<String, Vec<u8>>,
+    pub nested_files: BTreeMap<String, Vec<u8>>,
 }
 
 impl ArtifactProcessor {
-    pub fn compute_manifest_digests(path: &Path) -> Result<BTreeMap<String, String>, SignerError> {
+    /// Calculate hashes for all files in archive
+    pub fn compute_manifest_digests(path: &Path, _ui: &Ui) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let archive = ZipArchive::new(BufReader::new(file))?;
         let len = archive.len();
@@ -241,7 +241,7 @@ impl ArtifactProcessor {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
         let mut digests = BTreeMap::new();
-        let mut nested_sources: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut nested_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
         for i in 0..archive.len() {
             let mut zip_file = archive.by_index(i)?;
@@ -270,13 +270,13 @@ impl ArtifactProcessor {
                     }
                 }
 
-                let nested_digests = Self::compute_manifest_digests(&nested_src)?;
+                let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
                 Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
 
                 let nested_bytes = fs::read(&nested_signed)?;
                 let digest = CryptoEngine::compute_sha1(&nested_bytes);
                 digests.insert(name.clone(), digest);
-                nested_sources.insert(name, nested_bytes);
+                nested_files.insert(name, nested_bytes);
             } else {
                 let digest = CryptoEngine::compute_stream_sha1(&mut zip_file)?;
                 digests.insert(name, digest);
@@ -285,7 +285,7 @@ impl ArtifactProcessor {
 
         Ok(NestedDigests {
             digests,
-            nested_sources,
+            nested_files,
         })
     }
 
@@ -307,11 +307,7 @@ impl ArtifactProcessor {
             timestamp.second()
         ));
 
-        let out_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(output)?;
+        let out_file = File::create(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         let manifest_bytes = Self::gen_manifest(digests);
@@ -323,6 +319,13 @@ impl ArtifactProcessor {
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
+        let total_files = archive.len();
+
+        // Show progress for writing files
+        if ui.verbose {
+            ui.show_progress_bar(total_files as u64, "Writing files");
+        }
+
         let mut buf = [0u8; BUFFER_SIZE];
 
         for i in 0..archive.len() {
@@ -362,7 +365,7 @@ impl ArtifactProcessor {
                         }
                     }
 
-                    let nested_digests = Self::compute_manifest_digests(&nested_src)?;
+                    let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
                     Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
 
                     // Use UTC logic for filesystem timestamp
@@ -392,7 +395,18 @@ impl ArtifactProcessor {
                     }
                 }
             }
+
+            // Update progress - only update if ui has a progress bar
+            if ui.verbose && ui.has_progress_bar() {
+                ui.update_progress((i + 1) as u64);
+            }
         }
+
+        // Finish progress
+        if ui.verbose && ui.has_progress_bar() {
+            ui.finish_progress();
+        }
+
         writer.finish()?;
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
@@ -407,7 +421,7 @@ impl ArtifactProcessor {
         output: &Path,
         keys: &KeyChain,
         digests: &BTreeMap<String, String>,
-        nested_sources: &BTreeMap<String, Vec<u8>>,
+        nested_files: &BTreeMap<String, Vec<u8>>,
         ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
@@ -421,11 +435,7 @@ impl ArtifactProcessor {
             timestamp.second()
         ));
 
-        let out_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(output)?;
+        let out_file = File::create(output)?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         let manifest_bytes = Self::gen_manifest(digests);
@@ -454,7 +464,7 @@ impl ArtifactProcessor {
 
                 writer.start_file(&name, options)?;
 
-                if let Some(nested_bytes) = nested_sources.get(&name) {
+                if let Some(nested_bytes) = nested_files.get(&name) {
                     ui.info(&format!("Embedding signed nested archive: {}", name));
                     writer.write_all(nested_bytes)?;
                 } else {
@@ -552,7 +562,7 @@ impl ArtifactProcessor {
         let key_pair = keys
             .private_key
             .as_ref()
-            .ok_or(SignerError::Config("Private Key Missing".into()))?;
+            .ok_or(SignerError::Config("Private key missing for signing".into()))?;
         let mut signature = vec![0u8; key_pair.public().modulus_len()];
         let rng = SystemRandom::new();
         key_pair.sign(RSA_SIGNATURE_SCHEME, &rng, sf, &mut signature)?;

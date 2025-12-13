@@ -5,6 +5,9 @@
  */
 
 use crate::{APP_AUTHOR, APP_NAME, APP_VERSION};
+use colored::*;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::{Arc, Mutex};
 
 // ANSI Color Codes
 const COLOR_RED: &str = "31";
@@ -13,12 +16,12 @@ const COLOR_YELLOW: &str = "33";
 const COLOR_BLUE: &str = "34";
 const COLOR_CYAN: &str = "36";
 const COLOR_DIM: &str = "2";
-const COLOR_BOLD: &str = "1";
 
 pub struct Ui {
-    verbose: bool,
+    pub(crate) verbose: bool,
     silent: bool,
     colors: bool,
+    progress_bar: Arc<Mutex<Option<ProgressBar>>>,
 }
 
 impl Default for Ui {
@@ -33,6 +36,52 @@ impl Ui {
             verbose,
             silent,
             colors,
+            progress_bar: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Creates and shows a progress bar with the specified style
+    pub fn show_progress_bar(&self, len: u64, message: &str) {
+        let pb = ProgressBar::new(len);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(&format!(
+                    "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:40.cyan/blue}} {{pos}}/{{len}} ({{eta}})",
+                    message
+                ))
+                .unwrap(),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+
+        if let Ok(mut guard) = self.progress_bar.lock() {
+            *guard = Some(pb);
+        }
+    }
+
+    /// Updates the progress bar position
+    pub fn update_progress(&self, pos: u64) {
+        if let Ok(guard) = self.progress_bar.lock() {
+            if let Some(ref pb) = *guard {
+                pb.set_position(pos);
+            }
+        }
+    }
+
+    /// Finishes and hides the progress bar
+    pub fn finish_progress(&self) {
+        if let Ok(guard) = self.progress_bar.lock() {
+            if let Some(ref pb) = *guard {
+                pb.finish_and_clear();
+            }
+        }
+    }
+
+    /// Check if a progress bar exists
+    pub fn has_progress_bar(&self) -> bool {
+        if let Ok(guard) = self.progress_bar.lock() {
+            guard.is_some()
+        } else {
+            false
         }
     }
 
@@ -41,13 +90,21 @@ impl Ui {
             return;
         }
 
-        let formatted = if self.colors {
-            let style = if is_dim {
-                format!("\x1b[{}m", COLOR_DIM)
-            } else {
-                "".to_string()
+        let formatted = if self.supports_color() {
+            let icon_colored = match color {
+                COLOR_RED => format!("{}", icon).red().bold().to_string(),  // Red
+                COLOR_GREEN => format!("{}", icon).green().bold().to_string(), // Green
+                COLOR_YELLOW => format!("{}", icon).yellow().bold().to_string(), // Yellow
+                COLOR_BLUE => format!("{}", icon).blue().bold().to_string(),  // Blue
+                COLOR_CYAN => format!("{}", icon).cyan().bold().to_string(),  // Cyan
+                _ => format!("{}", icon).bold().to_string(),
             };
-            format!("{}\x1b[{}m{}\x1b[0m {}", style, color, icon, msg)
+
+            if is_dim {
+                format!("{} {}", icon_colored.dimmed(), msg.dimmed())
+            } else {
+                format!("{} {}", icon_colored, msg.normal())
+            }
         } else {
             format!("{} {}", icon, msg)
         };
@@ -71,12 +128,11 @@ impl Ui {
         eprintln!();
 
         if self.colors {
-            eprintln!("\x1b[{}m+-{}-+\x1b[0m", COLOR_CYAN, border);
-            eprintln!(
-                "\x1b[{}m| \x1b[{}m{}\x1b[{}m |\x1b[0m",
-                COLOR_CYAN, COLOR_BOLD, title, COLOR_CYAN
-            );
-            eprintln!("\x1b[{}m+-{}-+\x1b[0m", COLOR_CYAN, border);
+            let top_bottom = format!("+-{}-+", border).cyan();
+            let middle = format!("| {} |", title.cyan().bold()).cyan();
+            eprintln!("{}", top_bottom);
+            eprintln!("{}", middle);
+            eprintln!("{}", top_bottom);
         } else {
             eprintln!("+-{}-+", border);
             eprintln!("| {} |", title);
@@ -93,12 +149,49 @@ impl Ui {
         println!("Description: High-performance cryptographic signer.");
     }
 
+    fn supports_color(&self) -> bool {
+        // Check NO_COLOR environment variable first
+        if std::env::var("NO_COLOR").is_ok() {
+            return false;
+        }
+
+        // Check if colors are explicitly disabled
+        if !self.colors {
+            return false;
+        }
+
+        // On Windows, check if terminal supports colors
+        #[cfg(windows)]
+        {
+            if !colored::control::SHOULD_COLORIZE.should_colorize() {
+                // Try to enable color support on Windows
+                colored::control::set_override(true);
+            }
+        }
+
+        true
+    }
+
+    /// Automatically enable color support if available
+    pub fn enable_colors_if_supported(&mut self) {
+        #[cfg(windows)]
+        {
+            // On Windows, enable color support
+            if self.colors {
+                colored::control::set_override(true);
+            }
+        }
+
+        // On Unix systems, colors are typically supported by default
+        // unless NO_COLOR is set
+    }
+
     pub fn print_mode_header(&self, title: &str) {
         if self.silent || !self.verbose {
             return;
         }
         if self.colors {
-            eprintln!("\n\x1b[{}m-- {} --\x1b[0m", COLOR_DIM, title);
+            eprintln!("\n{}", format!("-- {} --", title).dimmed());
         } else {
             eprintln!("\n-- {} --", title);
         }
@@ -141,14 +234,114 @@ impl Ui {
         }
         eprintln!();
         if self.colors {
-            eprintln!("\x1b[1m{}:\x1b[0m", title);
+            eprintln!("{}", format!("{}:", title).bold());
         } else {
             eprintln!("{}:", title);
         }
 
         for (key, val) in fields {
-            eprintln!("  {:<15} {}", key, val);
+            if self.colors {
+                eprintln!("  {:<15} {}", key.cyan(), val);
+            } else {
+                eprintln!("  {:<15} {}", key, val);
+            }
         }
         eprintln!();
+    }
+
+    /// Prints an info message using colored crate
+    pub fn info_colored(&self, msg: &str) {
+        if !self.verbose {
+            return;
+        }
+        if self.colors {
+            eprintln!("{}", format!("[INFO] {}", msg).blue().bold());
+        } else {
+            eprintln!("[INFO] {}", msg);
+        }
+    }
+
+    /// Prints a success message using colored crate
+    pub fn success_colored(&self, msg: &str) {
+        if self.silent {
+            return;
+        }
+        if self.colors {
+            eprintln!("{}", format!("[SUCCESS] {}", msg).green().bold());
+        } else {
+            eprintln!("[SUCCESS] {}", msg);
+        }
+    }
+
+    /// Prints a warning message using colored crate
+    pub fn warn_colored(&self, msg: &str) {
+        if self.silent {
+            return;
+        }
+        if self.colors {
+            eprintln!("{}", format!("[WARN] {}", msg).yellow().bold());
+        } else {
+            eprintln!("[WARN] {}", msg);
+        }
+    }
+
+    /// Prints an error message using colored crate
+    pub fn error_colored(&self, msg: &str) {
+        eprintln!("{}", format!("[ERROR] {}", msg).red().bold());
+    }
+
+    /// Prints a debug message when in verbose mode
+    pub fn debug(&self, msg: &str) {
+        if self.verbose {
+            if self.colors {
+                eprintln!("{}", format!("[DEBUG] {}", msg).purple().dimmed());
+            } else {
+                eprintln!("[DEBUG] {}", msg);
+            }
+        }
+    }
+
+    /// Prints a formatted table from Vec<&str> rows
+    pub fn print_table(&self, headers: &[&str], rows: Vec<Vec<String>>) {
+        if self.colors {
+            // Just print a simple formatted table
+            let header_str = headers.join(" │ ");
+            println!("{}", format!("┌─ {} ─┐", header_str).bold().bright_white());
+
+            for row in rows {
+                let row_str = row.join(" │ ");
+                println!("├─ {} ─┤", row_str);
+            }
+            println!("{}", "└─────────────────────────────────────────┘".bold().bright_white());
+        } else {
+            println!("{}", headers.join(" | "));
+            for row in rows {
+                let row_str = row.join(" | ");
+                println!("{}", row_str);
+            }
+        }
+    }
+
+    /// Print a simple key-value table
+    pub fn print_key_value_table(&self, data: &[(&str, &str)]) {
+        let rows: Vec<Vec<String>> = data.iter()
+            .map(|(key, value)| vec![(*key).to_string(), (*value).to_string()])
+            .collect();
+
+        if self.colors {
+            let header_str = "KEY │ VALUE".to_string();
+            println!("{}", format!("┌─ {} ─┐", header_str).bold().bright_white());
+
+            for row in rows {
+                let row_str = format!("{} │ {}", row.get(0).unwrap_or(&"".to_string()),
+                                     row.get(1).unwrap_or(&"".to_string()));
+                println!("├─ {} ─┤", row_str);
+            }
+            println!("{}", "└─────────────────────────────────────────┘".bold().bright_white());
+        } else {
+            for (key, value) in data {
+                println!("{:<20} : {}", key, value);
+            }
+        }
     }
 }

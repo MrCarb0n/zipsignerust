@@ -56,7 +56,7 @@ impl Config {
             let path = PathBuf::from(input_str);
             if !path.exists() {
                 return Err(SignerError::Config(format!(
-                    "Input file not found: {}",
+                    "Can't find input file: {}",
                     path.display()
                 )));
             }
@@ -117,7 +117,7 @@ impl Config {
         let input_path = PathBuf::from(matches.get_one::<String>("input").unwrap());
         if !input_path.exists() {
             return Err(SignerError::Config(format!(
-                "Input file not found: {}",
+                "Can't find input file: {}",
                 input_path.display()
             )));
         }

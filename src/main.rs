@@ -12,7 +12,8 @@ use zipsignerust::ui::Ui;
 fn main() {
     if let Err(e) = cli::run() {
         // Create a default UI just for logging the error cleanly
-        let ui = Ui::default();
+        let mut ui = Ui::default();
+        ui.enable_colors_if_supported();
         ui.error(&format!("{}", e));
         std::process::exit(1);
     }

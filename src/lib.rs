@@ -32,3 +32,7 @@ pub const BUFFER_SIZE: usize = 64 * 1024;
 pub const MANIFEST_NAME: &str = "META-INF/MANIFEST.MF";
 pub const CERT_SF_NAME: &str = "META-INF/CERT.SF";
 pub const CERT_RSA_NAME: &str = "META-INF/CERT.RSA";
+
+// Use mimalloc as the global allocator for improved performance
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
