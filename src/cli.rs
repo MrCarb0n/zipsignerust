@@ -42,12 +42,12 @@ pub fn run() -> Result<(), SignerError> {
                 .arg(
                     Arg::new("input")
                         .required(true)
-                        .help("Path to the input ZIP file")
+                        .help("Path to the input ZIP file (- for stdin)")
                         .index(1),
                 )
                 .arg(
                     Arg::new("output")
-                        .help("Path to save the signed ZIP (optional)")
+                        .help("Path to save the signed ZIP (- for stdout, optional)")
                         .index(2),
                 )
                 .arg(
