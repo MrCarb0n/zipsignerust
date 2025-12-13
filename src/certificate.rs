@@ -4,8 +4,6 @@
  * Licensed under the MIT License.
  */
 
-// Default Private Key (PEM format)
-// Embedded for fallback signing capability.
 pub const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDMulcsqyg76c4e
 MRbYd7lJTT9muCFhFArFxQleAjDECW2FKWed8I4MMSbcyNHBOoHNuo2Tjc6WKKzF
@@ -35,8 +33,6 @@ YEXazI0EYkFNWEFmnrf6kcL/S5lxgIvDXVusyvXRqRvtnPuMyl8nKDwbufN8Uk/X
 jyXGq/xW2NMb58h20I6D3dY=
 -----END PRIVATE KEY-----"#;
 
-// Default Public Key / Certificate (PEM format)
-// Embedded for fallback verification.
 pub const PUBLIC_KEY: &str = r#"-----BEGIN CERTIFICATE-----
 MIID5jCCAs6gAwIBAgIJAMtfYMW0bf+hMA0GCSqGSIb3DQEBCwUAMIGeMSUwIwYJ
 KoZIhvcNAQkBFhZkZXZAemlwc2lnbmVydXN0LmxvY2FsMQswCQYDVQQGEwJYWDEO
