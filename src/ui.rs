@@ -131,9 +131,6 @@ impl Ui {
         let width = title.len();
         let border = "-".repeat(width);
 
-        // Print empty line first to separate from any piped output
-        eprintln!();
-
         if self.colors {
             let top_bottom = format!("+-{}-+", border).cyan();
             let middle = format!("| {} |", title.cyan().bold()).cyan();
@@ -149,7 +146,6 @@ impl Ui {
 
     pub fn print_version_info(&self) {
         self.print_rich_banner();
-        eprintln!();
         println!("Author:      {}", APP_AUTHOR);
         println!("Repository:  https://github.com/MrCarb0n/zipsignerust");
         println!("License:     MIT");
@@ -197,10 +193,12 @@ impl Ui {
         if self.silent || !self.verbose {
             return;
         }
+        // Add spacing before mode header for better visual separation
+        eprintln!();
         if self.colors {
-            eprintln!("\n{}", format!("-- {} --", title).dimmed());
+            eprintln!("{}", format!("-- {} --", title).dimmed());
         } else {
-            eprintln!("\n-- {} --", title);
+            eprintln!("-- {} --", title);
         }
     }
 
@@ -239,7 +237,6 @@ impl Ui {
         if self.silent || !self.verbose {
             return;
         }
-        eprintln!();
         if self.colors {
             eprintln!("{}", format!("{}:", title).bold());
         } else {
@@ -248,12 +245,11 @@ impl Ui {
 
         for (key, val) in fields {
             if self.colors {
-                eprintln!("  {:<15} {}", key.cyan(), val);
+                eprintln!("  {:<8} {}", key.cyan(), val);
             } else {
-                eprintln!("  {:<15} {}", key, val);
+                eprintln!("  {:<8} {}", key, val);
             }
         }
-        eprintln!();
     }
 
 
@@ -311,7 +307,7 @@ impl Ui {
             );
         } else {
             for (key, value) in data {
-                println!("{:<20} : {}", key, value);
+                println!("{:<8} : {}", key, value);
             }
         }
     }

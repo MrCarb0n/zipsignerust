@@ -167,6 +167,10 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
 
             if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
                 ui.success("Signature valid. Artifact authentic.");
+                // Add a small vertical space after verification result for better visual separation
+                if ui.verbose {
+                    eprintln!();
+                }
             }
         }
         config::Mode::Sign { inplace } => {
@@ -225,6 +229,11 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                         std::fs::remove_file(&working_input)?;
                         ui.success("In-place signing complete.");
 
+                        // Add a small vertical space before the signing report for better visual separation
+                        if ui.verbose {
+                            eprintln!();
+                        }
+
                         ui.print_summary(
                             "Signing Report",
                             &[
@@ -233,6 +242,10 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                                 ("File", config.input_path.display().to_string()),
                             ],
                         );
+                        // Add a small vertical space after the signing report for better visual separation
+                        if ui.verbose {
+                            eprintln!();
+                        }
                     } else if config.is_stdout {
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
@@ -246,6 +259,11 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                             "ZipSignerust Dev"
                         };
 
+                        // Add a small vertical space before the signing report for better visual separation
+                        if ui.verbose {
+                            eprintln!();
+                        }
+
                         ui.print_summary(
                             "Signing Report",
                             &[
@@ -256,6 +274,10 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                                 ("Key Used", key_type.to_string()),
                             ],
                         );
+                        // Add a small vertical space after the signing report for better visual separation
+                        if ui.verbose {
+                            eprintln!();
+                        }
                     }
                 }
                 Err(e) => {
