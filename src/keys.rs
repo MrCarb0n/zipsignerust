@@ -52,6 +52,8 @@ impl KeyChain {
             Self::check_key_permissions(p, ui)?;
             fs::read(p)?
         } else {
+            // Warn about using development keys
+            ui.warn("Using dev key. For production: -k flag.");
             crate::certificate::PRIVATE_KEY.as_bytes().to_vec()
         };
 
@@ -71,6 +73,8 @@ impl KeyChain {
         let content = if let Some(p) = path {
             fs::read(p)?
         } else {
+            // Warn about using development certificate
+            ui.warn("Using dev cert. For production: -p flag.");
             crate::certificate::PUBLIC_KEY.as_bytes().to_vec()
         };
 

@@ -234,12 +234,19 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                             eprintln!();
                         }
 
+                        let key_type = if config.key_path.is_some() {
+                            "Custom (PEM/PK8)"
+                        } else {
+                            "ZipSignerust Dev"
+                        };
+
                         ui.print_summary(
                             "Signing Report",
                             &[
                                 ("Status", "Success".to_string()),
                                 ("Mode", "In-Place".to_string()),
                                 ("File", config.input_path.display().to_string()),
+                                ("Key Used", key_type.to_string()),
                             ],
                         );
                         // Add a small vertical space after the signing report for better visual separation

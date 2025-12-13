@@ -13,7 +13,6 @@ use crate::{
 };
 use crc32fast::Hasher as Crc32;
 use filetime::{set_file_times, FileTime};
-use rayon::prelude::*;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -48,36 +47,80 @@ impl ArtifactProcessor {
     /// Calculate hashes for all files in archive
     pub fn compute_manifest_digests(
         path: &Path,
-        _ui: &Ui,
+        ui: &Ui,
     ) -> Result<BTreeMap<String, String>, SignerError> {
         let file = File::open(path)?;
         let mut archive = ZipArchive::new(BufReader::new(file))?;
         let len = archive.len();
 
-        // Collect file metadata first to avoid locking archive during parallel processing
-        let mut files_to_process = Vec::with_capacity(len);
-        for i in 0..len {
-            let zip_file = archive.by_index(i)?;
-            let name = zip_file.name().to_string();
-            if !name.ends_with('/') && !name.starts_with("META-INF/") {
-                files_to_process.push(name);
+        // Show progress for large archives
+        if ui.verbose {
+            let non_signature_count = (0..len)
+                .filter_map(|i| {
+                    archive.by_index(i).ok().and_then(|f| {
+                        let name = f.name();
+                        if !name.ends_with('/')
+                            && (!name.starts_with("META-INF/")
+                                || !(name == MANIFEST_NAME
+                                    || name == CERT_SF_NAME
+                                    || name == CERT_RSA_NAME
+                                    || name.ends_with("/MANIFEST.MF")
+                                    || name.ends_with(".SF")
+                                    || name.ends_with(".RSA")))
+                        {
+                            Some(name.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .count();
+
+            if non_signature_count > 10 {
+                // Only show progress bar if there are many files to process
+                ui.show_progress_bar(non_signature_count as u64, "Computing digests");
             }
         }
 
-        // Process files in parallel with individual archive handles
-        let digests: Result<Vec<(String, String)>, _> = files_to_process
-            .into_par_iter()
-            .map(|name| {
-                let file = File::open(path)?;
-                let mut local_archive = ZipArchive::new(BufReader::new(file))?;
+        // Single archive pass to collect digests
+        let mut digests = BTreeMap::new();
 
-                let mut zip_file = local_archive.by_name(&name)?;
+        for i in 0..len {
+            let mut zip_file = archive.by_index(i)?;
+            let name = zip_file.name().to_string();
+
+            if !name.ends_with('/') {
+                // Only include non-signature META-INF files and other regular files
+                if name.starts_with("META-INF/") {
+                    // Skip signature-related files that get regenerated
+                    if name == MANIFEST_NAME
+                        || name == CERT_SF_NAME
+                        || name == CERT_RSA_NAME
+                        || name.ends_with("/MANIFEST.MF")
+                        || name.ends_with(".SF")
+                        || name.ends_with(".RSA")
+                    {
+                        continue; // Skip this file as it will be regenerated during signing
+                    }
+                    // Otherwise, include non-signature META-INF files
+                }
+
                 let digest = CryptoEngine::compute_stream_sha1(&mut zip_file)?;
-                Ok((name, digest))
-            })
-            .collect();
+                digests.insert(name.clone(), digest);
 
-        digests.map(|results| results.into_iter().collect())
+                // Update progress bar if it exists
+                if ui.has_progress_bar() {
+                    ui.update_progress(digests.len() as u64);
+                }
+            }
+        }
+
+        // Finish progress bar
+        if ui.has_progress_bar() {
+            ui.finish_progress();
+        }
+
+        Ok(digests)
     }
 
     pub fn compute_digests_prepare_nested(
@@ -93,10 +136,28 @@ impl ArtifactProcessor {
         for i in 0..archive.len() {
             let mut zip_file = archive.by_index(i)?;
             let name = zip_file.name().to_string();
-            if name.ends_with('/') || name.starts_with("META-INF/") {
+
+            // Only skip signature-related META-INF files during digest computation
+            if name.ends_with('/') {
                 continue;
             }
+
+            if name.starts_with("META-INF/") {
+                // Skip only the signature files during digest computation since they'll be replaced
+                if name == MANIFEST_NAME
+                    || name == CERT_SF_NAME
+                    || name == CERT_RSA_NAME
+                    || name.ends_with("/MANIFEST.MF")
+                    || name.ends_with(".SF")
+                    || name.ends_with(".RSA")
+                {
+                    continue; // Skip this file as it will be regenerated during signing
+                }
+                // Otherwise, treat non-signature META-INF files like regular files for digest computation
+            }
+
             if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
+                // Extract nested archive to temp file (using a more efficient approach)
                 let tmpdir = tempdir()?;
                 let nested_src = tmpdir.path().join("nested-src.zip");
                 let nested_signed = tmpdir.path().join("nested-signed.zip");
@@ -107,14 +168,9 @@ impl ArtifactProcessor {
                         .write(true)
                         .truncate(true)
                         .open(&nested_src)?;
-                    let mut buf = [0u8; BUFFER_SIZE];
-                    loop {
-                        let n = zip_file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        out.write_all(&buf[..n])?;
-                    }
+
+                    // Use buffered copy for efficiency
+                    std::io::copy(&mut zip_file, &mut out)?;
                 }
 
                 let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
@@ -144,15 +200,6 @@ impl ArtifactProcessor {
         ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        ui.verbose(&format!(
-            "Timestamp used: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-            timestamp.year(),
-            timestamp.month(),
-            timestamp.day(),
-            timestamp.hour(),
-            timestamp.minute(),
-            timestamp.second()
-        ));
 
         // Create output file with buffered writer for better performance
         let out_file = File::create(output)?;
@@ -182,75 +229,75 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                if !name.starts_with("META-INF/")
-                    && !name.ends_with("MANIFEST.MF")
-                    && !name.ends_with(".SF")
-                    && !name.ends_with(".RSA")
-                {
-                    let options = FileOptions::<()>::default()
-                        .compression_method(file.compression())
-                        .last_modified_time(timestamp)
-                        .unix_permissions(file.unix_mode().unwrap_or(0o644))
-                        .with_alignment(4);
+                // Only skip the signature-related files in META-INF, but preserve other META-INF files
+                if name.starts_with("META-INF/") {
+                    // Skip only the signature files that we'll replace with new ones
+                    if name == MANIFEST_NAME
+                        || name == CERT_SF_NAME
+                        || name == CERT_RSA_NAME
+                        || name.ends_with("/MANIFEST.MF")
+                        || name.ends_with(".SF")
+                        || name.ends_with(".RSA")
+                    {
+                        continue; // Skip this file as we'll write our own versions
+                    }
+                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
+                }
 
-                    writer.start_file(&name, options)?;
-                    if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
-                        ui.info(&format!("Signing nested archive: {}", name));
-                        let tmpdir = tempdir()?;
-                        let nested_src = tmpdir.path().join("nested-src.zip");
-                        let nested_signed = tmpdir.path().join("nested-signed.zip");
+                let options = FileOptions::<()>::default()
+                    .compression_method(file.compression())
+                    .last_modified_time(timestamp)
+                    .unix_permissions(file.unix_mode().unwrap_or(0o644))
+                    .with_alignment(4);
 
-                        {
-                            let mut out = OpenOptions::new()
-                                .create(true)
-                                .write(true)
-                                .truncate(true)
-                                .open(&nested_src)?;
-                            loop {
-                                let n = file.read(&mut buf)?;
-                                if n == 0 {
-                                    break;
-                                }
-                                out.write_all(&buf[..n])?;
-                            }
-                        }
+                writer.start_file(&name, options)?;
+                if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".apk") {
+                    ui.info(&format!("Signing nested archive: {}", name));
+                    let tmpdir = tempdir()?;
+                    let nested_src = tmpdir.path().join("nested-src.zip");
+                    let nested_signed = tmpdir.path().join("nested-signed.zip");
 
-                        let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
-                        Self::write_signed_zip(
-                            &nested_src,
-                            &nested_signed,
-                            keys,
-                            &nested_digests,
-                            ui,
-                        )?;
-
-                        // Use UTC logic for filesystem timestamp
-                        let ft = FileTime::from_unix_time(
-                            Self::zip_datetime_to_unix(&timestamp) as i64,
-                            0,
-                        );
-                        set_file_times(&nested_signed, ft, ft)?;
-                        ui.verbose(&format!(
-                            "mtime set on nested archive: {}",
-                            nested_signed.display()
-                        ));
-
-                        let mut nested_file = BufReader::new(File::open(&nested_signed)?);
-                        loop {
-                            let n = nested_file.read(&mut buf)?;
-                            if n == 0 {
-                                break;
-                            }
-                            writer.write_all(&buf[..n])?;
-                        }
-                    } else {
+                    {
+                        let mut out = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&nested_src)?;
                         loop {
                             let n = file.read(&mut buf)?;
                             if n == 0 {
                                 break;
                             }
-                            writer.write_all(&buf[..n])?;
+                            out.write_all(&buf[..n])?;
                         }
+                    }
+
+                    let nested_digests = Self::compute_manifest_digests(&nested_src, ui)?;
+                    Self::write_signed_zip(&nested_src, &nested_signed, keys, &nested_digests, ui)?;
+
+                    // Set filesystem timestamp
+                    let ft = FileTime::from_system_time(std::time::SystemTime::now());
+                    set_file_times(&nested_signed, ft, ft)?;
+                    ui.verbose(&format!(
+                        "mtime set on nested archive: {}",
+                        nested_signed.display()
+                    ));
+
+                    let mut nested_file = BufReader::new(File::open(&nested_signed)?);
+                    loop {
+                        let n = nested_file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
+                        }
+                        writer.write_all(&buf[..n])?;
+                    }
+                } else {
+                    loop {
+                        let n = file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
+                        }
+                        writer.write_all(&buf[..n])?;
                     }
                 }
 
@@ -285,15 +332,6 @@ impl ArtifactProcessor {
         ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        ui.verbose(&format!(
-            "Timestamp used: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-            timestamp.year(),
-            timestamp.month(),
-            timestamp.day(),
-            timestamp.hour(),
-            timestamp.minute(),
-            timestamp.second()
-        ));
 
         // Create output file with buffered writer for better performance
         let out_file = File::create(output)?;
@@ -316,30 +354,40 @@ impl ArtifactProcessor {
             for i in 0..archive.len() {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
-                if !name.starts_with("META-INF/")
-                    && !name.ends_with("MANIFEST.MF")
-                    && !name.ends_with(".SF")
-                    && !name.ends_with(".RSA")
-                {
-                    let options = FileOptions::<()>::default()
-                        .compression_method(file.compression())
-                        .last_modified_time(timestamp)
-                        .unix_permissions(file.unix_mode().unwrap_or(0o644))
-                        .with_alignment(4);
 
-                    writer.start_file(&name, options)?;
+                // Only skip the signature-related files in META-INF, but preserve other META-INF files
+                if name.starts_with("META-INF/") {
+                    // Skip only the signature files that we'll replace with new ones
+                    if name == MANIFEST_NAME
+                        || name == CERT_SF_NAME
+                        || name == CERT_RSA_NAME
+                        || name.ends_with("/MANIFEST.MF")
+                        || name.ends_with(".SF")
+                        || name.ends_with(".RSA")
+                    {
+                        continue; // Skip this file as we'll write our own versions
+                    }
+                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
+                }
 
-                    if let Some(nested_bytes) = nested_files.get(&name) {
-                        ui.info(&format!("Embedding signed nested archive: {}", name));
-                        writer.write_all(nested_bytes)?;
-                    } else {
-                        loop {
-                            let n = file.read(&mut buf)?;
-                            if n == 0 {
-                                break;
-                            }
-                            writer.write_all(&buf[..n])?;
+                let options = FileOptions::<()>::default()
+                    .compression_method(file.compression())
+                    .last_modified_time(timestamp)
+                    .unix_permissions(file.unix_mode().unwrap_or(0o644))
+                    .with_alignment(4);
+
+                writer.start_file(&name, options)?;
+
+                if let Some(nested_bytes) = nested_files.get(&name) {
+                    ui.info(&format!("Embedding signed nested archive: {}", name));
+                    writer.write_all(nested_bytes)?;
+                } else {
+                    loop {
+                        let n = file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
                         }
+                        writer.write_all(&buf[..n])?;
                     }
                 }
             }
@@ -353,6 +401,95 @@ impl ArtifactProcessor {
         ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
+    }
+
+    fn get_timestamp_for_signing(
+        keys: &KeyChain,
+        timestamp_str: &Option<String>,
+        _ui: &Ui,
+    ) -> Result<DateTime, SignerError> {
+        // If no custom timestamp is provided, use the reproducible timestamp from keys
+        if timestamp_str.is_none() {
+            let timestamp = keys.get_reproducible_timestamp();
+            return Ok(timestamp);
+        }
+
+        // Parse the custom timestamp
+        let ts_str = timestamp_str.as_ref().unwrap();
+        if ts_str == "reproducible" {
+            let timestamp = keys.get_reproducible_timestamp();
+            return Ok(timestamp);
+        }
+
+        // Parse timestamp in format "YYYY-MM-DD HH:MM:SS"
+        let parts: Vec<&str> = ts_str.split_whitespace().collect();
+        if parts.len() != 2 {
+            return Err(SignerError::Config(
+                "Invalid timestamp format. Use 'YYYY-MM-DD HH:MM:SS'".to_string(),
+            ));
+        }
+
+        let date_parts: Vec<&str> = parts[0].split('-').collect();
+        let time_parts: Vec<&str> = parts[1].split(':').collect();
+
+        if date_parts.len() != 3 || time_parts.len() != 3 {
+            return Err(SignerError::Config(
+                "Invalid timestamp format. Use 'YYYY-MM-DD HH:MM:SS'".to_string(),
+            ));
+        }
+
+        let year: u16 = date_parts[0]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid year in timestamp".to_string()))?;
+        let month: u8 = date_parts[1]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid month in timestamp".to_string()))?;
+        let day: u8 = date_parts[2]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid day in timestamp".to_string()))?;
+
+        let hour: u8 = time_parts[0]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid hour in timestamp".to_string()))?;
+        let minute: u8 = time_parts[1]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid minute in timestamp".to_string()))?;
+        let second: u8 = time_parts[2]
+            .parse()
+            .map_err(|_| SignerError::Config("Invalid second in timestamp".to_string()))?;
+
+        // Validate ranges
+        if !(1..=12).contains(&month) {
+            return Err(SignerError::Config(
+                "Month must be between 1 and 12".to_string(),
+            ));
+        }
+        if !(1..=31).contains(&day) {
+            return Err(SignerError::Config(
+                "Day must be between 1 and 31".to_string(),
+            ));
+        }
+        if !((0..=23).contains(&hour)) {
+            return Err(SignerError::Config(
+                "Hour must be between 0 and 23".to_string(),
+            ));
+        }
+        if !((0..=59).contains(&minute)) {
+            return Err(SignerError::Config(
+                "Minute must be between 0 and 59".to_string(),
+            ));
+        }
+        if !((0..=59).contains(&second)) {
+            return Err(SignerError::Config(
+                "Second must be between 0 and 59".to_string(),
+            ));
+        }
+
+        // Create the DateTime object
+        let timestamp = DateTime::from_date_and_time(year, month, day, hour, minute, second)
+            .map_err(|e| SignerError::Config(format!("Invalid date/time: {}", e)))?;
+
+        Ok(timestamp)
     }
 
     fn write_entry(
@@ -470,17 +607,84 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    fn zip_datetime_to_unix(dt: &DateTime) -> u64 {
-        use chrono::NaiveDate;
-        let year = dt.year() as i32;
-        let year = if year < 1980 { 1980 } else { year };
-        let nd = NaiveDate::from_ymd_opt(year, dt.month() as u32, dt.day() as u32)
-            .unwrap_or(NaiveDate::from_ymd_opt(1980, 1, 1).unwrap());
-        let ndt = nd
-            .and_hms_opt(dt.hour() as u32, dt.minute() as u32, dt.second() as u32)
-            .unwrap_or_default();
+    pub fn write_signed_zip_with_custom_timestamp(
+        input: &Path,
+        output: &Path,
+        keys: &KeyChain,
+        digests: &BTreeMap<String, String>,
+        nested_files: &BTreeMap<String, Vec<u8>>,
+        ui: &Ui,
+        timestamp_str: &Option<String>,
+    ) -> Result<(), SignerError> {
+        let timestamp = Self::get_timestamp_for_signing(keys, timestamp_str, ui)?;
 
-        // Ensure strictly UTC conversion
-        ndt.and_utc().timestamp().max(0) as u64
+        // Create output file with buffered writer for better performance
+        let out_file = File::create(output)?;
+        let buf_writer = BufWriter::with_capacity(BUFFER_SIZE, out_file);
+        let mut writer = ZipWriter::new(buf_writer);
+
+        let manifest_bytes = Self::gen_manifest(digests);
+        let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
+        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
+
+        Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
+        Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
+        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
+
+        let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
+
+        // Use thread-local buffer to avoid allocations in the hot path
+        PROCESSING_BUFFER.with(|local_buf| {
+            let mut buf = local_buf.borrow_mut();
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                let name = file.name().to_string();
+
+                // Only skip the signature-related files in META-INF, but preserve other META-INF files
+                if name.starts_with("META-INF/") {
+                    // Skip only the signature files that we'll replace with new ones
+                    if name == MANIFEST_NAME
+                        || name == CERT_SF_NAME
+                        || name == CERT_RSA_NAME
+                        || name.ends_with("/MANIFEST.MF")
+                        || name.ends_with(".SF")
+                        || name.ends_with(".RSA")
+                    {
+                        continue; // Skip this file as we'll write our own versions
+                    }
+                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
+                }
+
+                let options = FileOptions::<()>::default()
+                    .compression_method(file.compression())
+                    .last_modified_time(timestamp)
+                    .unix_permissions(file.unix_mode().unwrap_or(0o644))
+                    .with_alignment(4);
+
+                writer.start_file(&name, options)?;
+
+                if let Some(nested_bytes) = nested_files.get(&name) {
+                    ui.info(&format!("Embedding signed nested archive: {}", name));
+                    writer.write_all(nested_bytes)?;
+                } else {
+                    loop {
+                        let n = file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
+                        }
+                        writer.write_all(&buf[..n])?;
+                    }
+                }
+            }
+            Ok::<(), SignerError>(())
+        })?;
+
+        writer.finish()?;
+        let now = std::time::SystemTime::now();
+        let ft = FileTime::from_system_time(now);
+        set_file_times(output, ft, ft)?;
+        ui.verbose(&format!("mtime set on output: {}", output.display()));
+        Self::verify_zip_integrity(output)?;
+        Ok(())
     }
 }

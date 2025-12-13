@@ -40,7 +40,6 @@ impl Ui {
         }
     }
 
-
     /// Creates and shows a progress bar with the specified style
     pub fn show_progress_bar(&self, len: u64, message: &str) {
         let pb = ProgressBar::new(len);
@@ -53,11 +52,7 @@ impl Ui {
             bar_width = bar_width
         );
 
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&template)
-                .unwrap(),
-        );
+        pb.set_style(ProgressStyle::default_bar().template(&template).unwrap());
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
 
         if let Ok(mut guard) = self.progress_bar.lock() {
@@ -132,8 +127,8 @@ impl Ui {
         let border = "-".repeat(width);
 
         if self.colors {
-            let top_bottom = format!("+-{}-+", border).cyan();
-            let middle = format!("| {} |", title.cyan().bold()).cyan();
+            let top_bottom = format!("+-{}-+", border).magenta().bold();
+            let middle = format!("| {} |", title.cyan().bold()).blue();
             eprintln!("{}", top_bottom);
             eprintln!("{}", middle);
             eprintln!("{}", top_bottom);
@@ -146,10 +141,23 @@ impl Ui {
 
     pub fn print_version_info(&self) {
         self.print_rich_banner();
-        println!("Author:      {}", APP_AUTHOR);
-        println!("Repository:  https://github.com/MrCarb0n/zipsignerust");
-        println!("License:     MIT");
-        println!("Description: High-performance cryptographic signer.");
+        if self.colors {
+            println!("{}", format!("Author:      {}", APP_AUTHOR).yellow());
+            println!(
+                "{}",
+                "Repository:  https://github.com/MrCarb0n/zipsignerust".cyan()
+            );
+            println!("{}", "License:     MIT".green());
+            println!(
+                "{}",
+                "Description: High-performance cryptographic signer.".magenta()
+            );
+        } else {
+            println!("Author:      {}", APP_AUTHOR);
+            println!("Repository:  https://github.com/MrCarb0n/zipsignerust");
+            println!("License:     MIT");
+            println!("Description: High-performance cryptographic signer.");
+        }
     }
 
     fn supports_color(&self) -> bool {
@@ -196,7 +204,7 @@ impl Ui {
         // Add spacing before mode header for better visual separation
         eprintln!();
         if self.colors {
-            eprintln!("{}", format!("-- {} --", title).dimmed());
+            eprintln!("{}", format!("-- {} --", title).yellow().bold());
         } else {
             eprintln!("-- {} --", title);
         }
@@ -238,21 +246,19 @@ impl Ui {
             return;
         }
         if self.colors {
-            eprintln!("{}", format!("{}:", title).bold());
+            eprintln!("{}", format!("{}:", title).green().bold());
         } else {
             eprintln!("{}:", title);
         }
 
         for (key, val) in fields {
             if self.colors {
-                eprintln!("  {:<8} {}", key.cyan(), val);
+                eprintln!("  {:<8} {}", key.cyan().bold(), val.green());
             } else {
                 eprintln!("  {:<8} {}", key, val);
             }
         }
     }
-
-
 
     /// Prints a formatted table from Vec<&str> rows
     pub fn print_table(&self, headers: &[&str], rows: Vec<Vec<String>>) {

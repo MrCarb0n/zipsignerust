@@ -189,11 +189,9 @@ impl Config {
     /// # Returns
     /// Configuration object for verification mode or an error
     fn parse_verify(matches: &ArgMatches, quiet: bool) -> Result<Self, SignerError> {
-        let input_path = PathBuf::from(
-            matches
-                .get_one::<String>("input")
-                .ok_or_else(|| SignerError::Config("No input file specified for verification".into()))?
-        );
+        let input_path = PathBuf::from(matches.get_one::<String>("input").ok_or_else(|| {
+            SignerError::Config("No input file specified for verification".into())
+        })?);
 
         if !input_path.exists() {
             return Err(SignerError::Config(format!(
