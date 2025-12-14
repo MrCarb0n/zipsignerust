@@ -28,10 +28,10 @@ impl ArtifactVerifier {
         let mut signature_bytes = Vec::new();
         archive
             .by_name(CERT_RSA_NAME)
-            .map_err(|e| {
+            .map_err(|_| {
                 SignerError::Validation(format!(
-                    "No RSA Signature file found ({}): {}",
-                    CERT_RSA_NAME, e
+                    "No RSA Signature file found ({}). Archive may not be properly signed.",
+                    CERT_RSA_NAME
                 ))
             })?
             .read_to_end(&mut signature_bytes)?;
@@ -39,20 +39,27 @@ impl ArtifactVerifier {
         let mut sf_file_bytes = Vec::new();
         archive
             .by_name(CERT_SF_NAME)
-            .map_err(|e| {
-                SignerError::Validation(format!("No SF file found ({}): {}", CERT_SF_NAME, e))
+            .map_err(|_| {
+                SignerError::Validation(format!(
+                    "No Signature File found ({}). Archive may not be properly signed.",
+                    CERT_SF_NAME
+                ))
             })?
             .read_to_end(&mut sf_file_bytes)?;
 
-        public_key.verify(&sf_file_bytes, &signature_bytes)?;
+        if let Err(e) = public_key.verify(&sf_file_bytes, &signature_bytes) {
+            return Err(SignerError::Validation(
+                format!("Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.", e)
+            ));
+        }
 
         let mut manifest_bytes = Vec::new();
         archive
             .by_name(MANIFEST_NAME)
-            .map_err(|e| {
+            .map_err(|_| {
                 SignerError::Validation(format!(
-                    "No Manifest file found ({}): {}",
-                    MANIFEST_NAME, e
+                    "No Manifest file found ({}). Archive may not be properly signed.",
+                    MANIFEST_NAME
                 ))
             })?
             .read_to_end(&mut manifest_bytes)?;
@@ -62,7 +69,7 @@ impl ArtifactVerifier {
 
         if !sf_content.contains(&format!("SHA1-Digest-Manifest: {}", manifest_hash)) {
             return Err(SignerError::Validation(
-                "Manifest hash in SF file does not match".into(),
+                format!("Manifest hash mismatch. The manifest file ({}) does not match the hash stored in the signature file ({}). Archive may be corrupted or tampered with.", MANIFEST_NAME, CERT_SF_NAME)
             ));
         }
 
@@ -79,9 +86,23 @@ impl ArtifactVerifier {
         for i in 0..archive.len() {
             let mut f = archive.by_index(i)?;
             let name = f.name().to_string();
-            if name.ends_with('/') || name.starts_with("META-INF/") {
+            if name.ends_with('/') {
                 continue;
             }
+
+            // Skip signature-related files in META-INF since they are not part of the content hashes
+            if name.starts_with("META-INF/")
+                && (name == crate::MANIFEST_NAME
+                    || name == crate::CERT_SF_NAME
+                    || name == crate::CERT_RSA_NAME
+                    || name.ends_with("/MANIFEST.MF")
+                    || name.ends_with(".SF")
+                    || name.ends_with(".RSA"))
+            {
+                continue;
+            }
+            // Otherwise, include non-signature META-INF files in verification
+
             let mut hasher_input = Vec::new();
             loop {
                 let n = f.read(&mut buf)?;
@@ -96,12 +117,12 @@ impl ArtifactVerifier {
 
         for (name, file_digest) in &file_map {
             let m_digest = manifest_entries.get(name).ok_or_else(|| {
-                SignerError::Validation(format!("Manifest missing entry for {}", name))
+                SignerError::Validation(format!("File '{}' exists in archive but is missing from manifest. Archive may be corrupted or tampered with.", name))
             })?;
             if m_digest != file_digest {
                 return Err(SignerError::Validation(format!(
-                    "Manifest digest mismatch for {}",
-                    name
+                    "Digest mismatch for file '{}'. Computed digest: {}, Manifest digest: {}. Archive may be corrupted or tampered with.",
+                    name, file_digest, m_digest
                 )));
             }
         }
@@ -109,7 +130,7 @@ impl ArtifactVerifier {
         for name in manifest_entries.keys() {
             if !file_map.contains_key(name) {
                 return Err(SignerError::Validation(format!(
-                    "Manifest references missing file {}",
+                    "Manifest references file '{}' that is missing from archive. Archive may be corrupted or tampered with.",
                     name
                 )));
             }
@@ -118,13 +139,16 @@ impl ArtifactVerifier {
         for (name, m_digest) in &manifest_entries {
             let entry_bytes = Self::make_manifest_entry_bytes(name, m_digest);
             let entry_hash = CryptoEngine::compute_sha1(&entry_bytes);
-            let sf_digest = sf_entries
-                .get(name)
-                .ok_or_else(|| SignerError::Validation(format!("SF missing entry for {}", name)))?;
+            let sf_digest = sf_entries.get(name).ok_or_else(|| {
+                SignerError::Validation(format!(
+                    "File '{}' exists in manifest but is missing from signature file ({}).",
+                    name, CERT_SF_NAME
+                ))
+            })?;
             if sf_digest != &entry_hash {
                 return Err(SignerError::Validation(format!(
-                    "SF digest mismatch for {}",
-                    name
+                    "Signature file digest mismatch for '{}'. Entry hash: {}, Signature file hash: {}. Archive may be corrupted or tampered with.",
+                    name, entry_hash, sf_digest
                 )));
             }
         }

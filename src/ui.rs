@@ -44,12 +44,10 @@ impl Ui {
     pub fn show_progress_bar(&self, len: u64, message: &str) {
         let pb = ProgressBar::new(len);
 
-        let bar_width = 40;
-
+        // Use a template that adapts to terminal width
         let template = format!(
-            "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:{bar_width}.cyan/blue}} {{pos}}/{{len}} ({{eta}})",
-            message,
-            bar_width = bar_width
+            "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:cyan/blue}} {{pos}}/{{len}} ({{eta}})",
+            message
         );
 
         pb.set_style(ProgressStyle::default_bar().template(&template).unwrap());
@@ -92,7 +90,11 @@ impl Ui {
             return;
         }
 
-        let formatted = if self.supports_color() {
+        // Format long messages with nice wrapping (without the indentation added here)
+        let wrapped_content = self.format_message_with_wrap(msg, 0);
+        let wrapped_lines: Vec<String> = wrapped_content.split('\n').map(|s| s.to_string()).collect();
+
+        if self.supports_color() {
             let icon_colored = match color {
                 COLOR_RED => icon.to_string().red().bold().to_string(), // Red
                 COLOR_GREEN => icon.to_string().green().bold().to_string(), // Green
@@ -103,15 +105,40 @@ impl Ui {
             };
 
             if is_dim {
-                format!("{} {}", icon_colored.dimmed(), msg.dimmed())
+                for (i, line) in wrapped_lines.iter().enumerate() {
+                    if i == 0 {
+                        // First line has icon
+                        eprintln!("{} {}", icon_colored.dimmed(), line.as_str().dimmed());
+                    } else {
+                        // Subsequent lines have indentation equal to icon length + space
+                        let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
+                        eprintln!("{}{}", indent, line.as_str().dimmed());
+                    }
+                }
             } else {
-                format!("{} {}", icon_colored, msg.normal())
+                for (i, line) in wrapped_lines.iter().enumerate() {
+                    if i == 0 {
+                        // First line has icon
+                        eprintln!("{} {}", icon_colored, line.as_str().normal());
+                    } else {
+                        // Subsequent lines have indentation equal to icon length + space
+                        let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
+                        eprintln!("{}{}", indent, line.as_str().normal());
+                    }
+                }
             }
         } else {
-            format!("{} {}", icon, msg)
+            for (i, line) in wrapped_lines.iter().enumerate() {
+                if i == 0 {
+                    // First line has icon
+                    eprintln!("{} {}", icon, line.as_str());
+                } else {
+                    // Subsequent lines have indentation equal to icon length + space
+                    let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
+                    eprintln!("{}{}", indent, line.as_str());
+                }
+            }
         };
-
-        eprintln!("{}", formatted);
     }
 
     pub fn print_banner(&self) {
@@ -252,10 +279,26 @@ impl Ui {
         }
 
         for (key, val) in fields {
-            if self.colors {
-                eprintln!("  {:<8} {}", key.cyan().bold(), val.green());
-            } else {
-                eprintln!("  {:<8} {}", key, val);
+            let formatted_val = self.format_message_with_wrap(val, key.len() + 10); // 2 spaces + 8 from {:<8}
+
+            // Split and properly format with indentation
+            let value_lines: Vec<String> = formatted_val.split('\n').map(|s| s.to_string()).collect();
+
+            for (i, line) in value_lines.iter().enumerate() {
+                if i == 0 {
+                    if self.colors {
+                        eprintln!("  {:<8} {}", key.cyan().bold(), line.as_str().green());
+                    } else {
+                        eprintln!("  {:<8} {}", key, line.as_str());
+                    }
+                } else {
+                    let indent = " ".repeat(key.len() + 10); // Match the field alignment
+                    if self.colors {
+                        eprintln!("{}{}", indent, line.as_str().green());
+                    } else {
+                        eprintln!("{}{}", indent, line.as_str());
+                    }
+                }
             }
         }
     }
@@ -313,7 +356,61 @@ impl Ui {
             );
         } else {
             for (key, value) in data {
-                println!("{:<8} : {}", key, value);
+                let formatted_val = self.format_message_with_wrap(value, key.len() + 10); // 8 from {:<8} + 2 for " : "
+
+                // Split and properly format with indentation
+                let value_lines: Vec<String> = formatted_val.split('\n').map(|s| s.to_string()).collect();
+
+                for (i, line) in value_lines.iter().enumerate() {
+                    if i == 0 {
+                        println!("{:<8} : {}", key, line.as_str());
+                    } else {
+                        let indent = " ".repeat(key.len() + 10); // Match the field alignment
+                        println!("{}  {}", indent, line.as_str());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Format and wrap long text messages with proper indentation
+    pub fn format_message_with_wrap(&self, message: &str, indent: usize) -> String {
+        // Get terminal width if available, default to 80 if not
+        let term_width = self.get_terminal_width();
+        let max_width = if term_width > 0 { term_width } else { 80 };
+
+        let effective_width = if max_width > indent { max_width - indent } else { 80 - indent };
+
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
+
+        for word in message.split_whitespace() {
+            if current_line.is_empty() {
+                current_line.push_str(word);
+            } else if current_line.len() + 1 + word.len() <= effective_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+
+        lines.join("\n")
+    }
+
+    /// Get the width of the terminal (or default to 80 if not available)
+    fn get_terminal_width(&self) -> usize {
+        // Try to use term_size if available, otherwise default to 80
+        match std::env::var("COLUMNS") {
+            Ok(columns_str) => columns_str.parse().unwrap_or(80),
+            Err(_) => {
+                // Fallback to using the term_size crate if available
+                term_size::dimensions().map(|(w, _)| w).unwrap_or(80)
             }
         }
     }
