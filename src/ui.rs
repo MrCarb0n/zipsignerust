@@ -54,65 +54,58 @@ impl Ui {
         let position_display_len = 2 * pos_len + 1; // for "123/456" format (~2*len + 1 for separator)
 
         // Determine an appropriate message length for narrow screens
-        let effective_message = if max_width < 60 && message.len() > 15 {
-            // For narrow screens, truncate message if it's too long
-            // Use chars().take() to properly handle Unicode characters
-            let mut truncated_msg = String::new();
-            for ch in message.chars().take(15) {
-                truncated_msg.push(ch);
-            }
-            if truncated_msg.len() < message.len() {
-                format!("{}...", truncated_msg)
-            } else {
-                message.to_string()
-            }
+        let effective_message = if max_width < 60 && message.chars().count() > 15 {
+            // For narrow screens, truncate message if it's too long using char boundaries
+            let truncated_msg: String = message.chars().take(15).collect();
+            format!("{}...", truncated_msg)
         } else {
             message.to_string()
         };
 
-        // Calculate space needed for other elements (conservative estimate):
-        // 2 chars for spinner + 1 space
-        // 12 chars for elapsed time like "[00:00:01]" + 1 space
-        // effective_message.len() + 1 space
-        // 1 space before position
-        // position_display_len for "pos/len"
-        // 1 space before ETA
-        // 8 chars for ETA like "(~59m)" + closing brace
-        let base_reserved_space = 2 + 1 + 12 + 1 + effective_message.len() + 1 + position_display_len + 1 + 8;
+        // Calculate space needed for other elements in the format:
+        // {spinner:.green} [elapsed_precise] message {wide_bar:.green/red} pos/len (eta)
+        let spinner_space = 3;        // "~ " + space
+        let time_space = 13;          // "[00:00:01]" + space
+        let message_space = effective_message.len() + 1;  // message + space
+        let position_space = position_display_len + 1;    // "1234/5678" + space
+        let eta_space = 9;            // "(~99m)" + space
 
-        let bar_width = if max_width > base_reserved_space {
-            max_width - base_reserved_space
+        let total_reserved_space = spinner_space + time_space + message_space + position_space + eta_space;
+
+        let bar_width = if max_width > total_reserved_space {
+            max_width - total_reserved_space
         } else {
-            // For very narrow terminals, use a very minimal calculation
-            // Reserve only the essential space: spinner+space(3) + message(1-15) + pos/len(3-20) + eta(8) + spaces(4) = ~20-40
-            let minimal_reserved = std::cmp::min(30, max_width.saturating_sub(5)); // Reserve at most 30 chars, but ensure at least 5 for bar
-            if max_width > minimal_reserved {
-                max_width - minimal_reserved
+            // For very narrow terminals, calculate a minimal but usable bar width
+            let minimal_bar_width = if max_width > 20 {
+                5  // Reasonable bar width when terminal is 20+ chars
+            } else if max_width > 15 {
+                3  // Minimal bar when terminal is 15-20 chars
             } else {
-                // If terminal is extremely narrow, make a best effort to show something
-                if max_width > 15 {
-                    5  // Minimum bar of 5 chars if terminal is 15-20 chars wide
-                } else if max_width > 10 {
-                    3  // Even more minimal bar if terminal is 10-15 chars wide
-                } else {
-                    1  // Absolute minimal bar if terminal is extremely narrow
-                }
-            }
-        }.max(1); // Ensure minimum 1 character for the bar to be visible
+                1  // Absolute minimum when terminal is extremely narrow
+            };
+            minimal_bar_width
+        }
+        .max(1); // Ensure minimum 1 character for the bar to be visible
 
         // Use a template that adapts to terminal width with ASCII characters
+        // Use wide format that automatically fills available space
         let template = format!(
-            "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:{}.green/red}} {{pos}}/{{len}} ({{eta}})",
-            effective_message,
-            bar_width
+            "{{spinner:.green}} [{{elapsed_precise}}] {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}})",
+            effective_message
         );
 
         // Use a fallback template if the custom template fails
         let style = ProgressStyle::default_bar()
             .template(&template)
             .unwrap_or_else(|_| {
+                // Fallback to fixed-width if wide_bar doesn't work
+                let fallback_template = format!(
+                    "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:{}.green}} {{pos}}/{{len}} ({{eta}})",
+                    effective_message,
+                    bar_width
+                );
                 ProgressStyle::default_bar()
-                    .template(&format!("{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:{}.green}} {{pos}}/{{len}} ({{eta}})", effective_message, bar_width))
+                    .template(&fallback_template)
                     .expect("Fallback template should always be valid")
             })
             // Customize the progress bar to use ASCII characters instead of Unicode
@@ -160,54 +153,55 @@ impl Ui {
 
         // Format long messages with nice wrapping (without the indentation added here)
         let wrapped_content = self.format_message_with_wrap(msg, 0);
-        let wrapped_lines: Vec<String> =
-            wrapped_content.split('\n').map(|s| s.to_string()).collect();
+        let wrapped_lines: Vec<&str> = wrapped_content.split('\n').collect();
 
         if self.supports_color() {
-            let icon_colored = match color {
-                COLOR_RED => icon.to_string().red().bold().to_string(), // Red
-                COLOR_GREEN => icon.to_string().green().bold().to_string(), // Green
-                COLOR_YELLOW => icon.to_string().yellow().bold().to_string(), // Yellow
-                COLOR_BLUE => icon.to_string().blue().bold().to_string(), // Blue
-                COLOR_CYAN => icon.to_string().cyan().bold().to_string(), // Cyan
-                _ => icon.to_string().bold().to_string(),
-            };
+            let icon_colored = self.colored_icon(icon, color);
 
-            if is_dim {
-                for (i, line) in wrapped_lines.iter().enumerate() {
-                    if i == 0 {
-                        // First line has icon
-                        eprintln!("{} {}", icon_colored.dimmed(), line.as_str().dimmed());
+            for (i, line) in wrapped_lines.iter().enumerate() {
+                if i == 0 {
+                    // First line has icon
+                    let line_output = if is_dim {
+                        format!("{} {}", icon_colored.dimmed(), line.dimmed())
                     } else {
-                        // Subsequent lines have indentation equal to icon length + space
-                        let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
-                        eprintln!("{}{}", indent, line.as_str().dimmed());
-                    }
-                }
-            } else {
-                for (i, line) in wrapped_lines.iter().enumerate() {
-                    if i == 0 {
-                        // First line has icon
-                        eprintln!("{} {}", icon_colored, line.as_str().normal());
+                        format!("{} {}", icon_colored, line.normal())
+                    };
+                    eprintln!("{}", line_output);
+                } else {
+                    // Subsequent lines have indentation equal to icon length + space
+                    let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
+                    let line_output = if is_dim {
+                        format!("{}{}", indent, line.dimmed())
                     } else {
-                        // Subsequent lines have indentation equal to icon length + space
-                        let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
-                        eprintln!("{}{}", indent, line.as_str().normal());
-                    }
+                        format!("{}{}", indent, line.normal())
+                    };
+                    eprintln!("{}", line_output);
                 }
             }
         } else {
             for (i, line) in wrapped_lines.iter().enumerate() {
                 if i == 0 {
                     // First line has icon
-                    eprintln!("{} {}", icon, line.as_str());
+                    eprintln!("{} {}", icon, line);
                 } else {
                     // Subsequent lines have indentation equal to icon length + space
                     let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
-                    eprintln!("{}{}", indent, line.as_str());
+                    eprintln!("{}{}", indent, line);
                 }
             }
-        };
+        }
+    }
+
+    /// Helper function to create colored icons
+    fn colored_icon(&self, icon: &str, color: &str) -> String {
+        match color {
+            COLOR_RED => icon.red().bold().to_string(),     // Red
+            COLOR_GREEN => icon.green().bold().to_string(), // Green
+            COLOR_YELLOW => icon.yellow().bold().to_string(), // Yellow
+            COLOR_BLUE => icon.blue().bold().to_string(),   // Blue
+            COLOR_CYAN => icon.cyan().bold().to_string(),   // Cyan
+            _ => icon.bold().to_string(),
+        }
     }
 
     pub fn print_banner(&self) {
@@ -456,18 +450,41 @@ impl Ui {
             80 - indent
         };
 
-        let mut lines = Vec::new();
-        let mut current_line = String::new();
+        let mut lines = Vec::with_capacity(4); // Pre-allocate for efficiency
+        let mut current_line = String::with_capacity(effective_width);
 
         for word in message.split_whitespace() {
-            if current_line.is_empty() {
-                current_line.push_str(word);
-            } else if current_line.len() + 1 + word.len() <= effective_width {
-                current_line.push(' ');
+            let space_needed = if current_line.is_empty() {
+                word.len()
+            } else {
+                current_line.len() + 1 + word.len()
+            };
+
+            if space_needed <= effective_width {
+                if !current_line.is_empty() {
+                    current_line.push(' ');
+                }
                 current_line.push_str(word);
             } else {
-                lines.push(current_line);
-                current_line = word.to_string();
+                // Add the current line to lines before starting a new one
+                if !current_line.is_empty() {
+                    lines.push(std::mem::take(&mut current_line)); // Use std::mem::take to move the value out
+                }
+
+                // Start new line with this word if it fits in a single line
+                if word.len() <= effective_width {
+                    current_line.push_str(word);
+                } else {
+                    // If the word is too long for a single line, break it
+                    let mut word_chars = word.chars();
+                    let chunk = word_chars.by_ref().take(effective_width).collect::<String>();
+                    lines.push(chunk);
+                    // Handle remaining part of the long word
+                    let remaining: String = word_chars.collect();
+                    if !remaining.is_empty() {
+                        current_line.push_str(&remaining);
+                    }
+                }
             }
         }
 
