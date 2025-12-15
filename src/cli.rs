@@ -229,10 +229,8 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                         std::fs::remove_file(&working_input)?;
                         ui.success("In-place signing complete.");
 
-                        // Add a small vertical space before the signing report for better visual separation
-                        if ui.verbose {
-                            eprintln!();
-                        }
+                        // Add visual separation before the signing report
+                        eprintln!();
 
                         let key_type = if config.key_path.is_some() {
                             "Custom (PEM/PK8)"
@@ -249,10 +247,6 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                                 ("Key Used", key_type.to_string()),
                             ],
                         );
-                        // Add a small vertical space after the signing report for better visual separation
-                        if ui.verbose {
-                            eprintln!();
-                        }
                     } else if config.is_stdout {
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
@@ -266,10 +260,8 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                             "ZipSignerust Dev"
                         };
 
-                        // Add a small vertical space before the signing report for better visual separation
-                        if ui.verbose {
-                            eprintln!();
-                        }
+                        // Add visual separation before the signing report
+                        eprintln!();
 
                         ui.print_summary(
                             "Signing Report",
@@ -281,10 +273,6 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                                 ("Key Used", key_type.to_string()),
                             ],
                         );
-                        // Add a small vertical space after the signing report for better visual separation
-                        if ui.verbose {
-                            eprintln!();
-                        }
                     }
                 }
                 Err(e) => {
