@@ -20,9 +20,14 @@ pub struct KeyChain {
     pub private_key: Option<RsaKeyPair>,
     pub public_key: Option<UnparsedPublicKey<Vec<u8>>>,
     pub cert_not_before: Option<DateTime>,
+    pub cert_der: Option<Vec<u8>>, // DER encoded certificate data
 }
 
-type LoadedPublicKey = (Option<UnparsedPublicKey<Vec<u8>>>, Option<DateTime>);
+type LoadedPublicKey = (
+    Option<UnparsedPublicKey<Vec<u8>>>,
+    Option<DateTime>,
+    Option<Vec<u8>>,
+);
 
 impl KeyChain {
     /// Load signing keys from files or use defaults
@@ -32,7 +37,7 @@ impl KeyChain {
         ui: &Ui,
     ) -> Result<Self, SignerError> {
         let private_key = Self::load_private_key(priv_path, ui)?;
-        let (public_key, cert_not_before) = Self::load_public_key(pub_path, ui)?;
+        let (public_key, cert_not_before, cert_der) = Self::load_public_key(pub_path, ui)?;
 
         if private_key.is_none() && public_key.is_none() {
             return Err(SignerError::Config(
@@ -44,6 +49,7 @@ impl KeyChain {
             private_key,
             public_key,
             cert_not_before,
+            cert_der,
         })
     }
 
@@ -99,6 +105,7 @@ impl KeyChain {
         Ok((
             Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, pk_der)),
             nb,
+            Some(cert_der),
         ))
     }
 

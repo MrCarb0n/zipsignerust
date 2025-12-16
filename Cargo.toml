@@ -31,7 +31,7 @@ mimalloc = { version = "0.1", default-features = false }
 colored = { version = "2.1", default-features = false }
 indicatif = { version = "0.17", default-features = false }
 tabled = { version = "0.15", default-features = false }
-term_size = "0.3"
+terminal_size = "0.3"
 
 
 [profile.release]

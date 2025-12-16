@@ -9,7 +9,7 @@
 
 use crate::{
     crypto::CryptoEngine, error::SignerError, keys::KeyChain, ui::Ui, APP_NAME, BUFFER_SIZE,
-    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    CERT_PUBLIC_KEY_NAME, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 use crc32fast::Hasher as Crc32;
 use filetime::{set_file_times, FileTime};
@@ -64,9 +64,12 @@ impl ArtifactProcessor {
                                 || !(name == MANIFEST_NAME
                                     || name == CERT_SF_NAME
                                     || name == CERT_RSA_NAME
+                                    || name == CERT_PUBLIC_KEY_NAME
                                     || name.ends_with("/MANIFEST.MF")
                                     || name.ends_with(".SF")
-                                    || name.ends_with(".RSA")))
+                                    || name.ends_with(".RSA")
+                                    || name.ends_with(".DSA")
+                                    || name.ends_with(".EC")))
                         {
                             Some(name.to_string())
                         } else {
@@ -96,9 +99,12 @@ impl ArtifactProcessor {
                     if name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
+                        || name == CERT_PUBLIC_KEY_NAME
                         || name.ends_with("/MANIFEST.MF")
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
+                        || name.ends_with(".DSA")
+                        || name.ends_with(".EC")
                     {
                         continue; // Skip this file as it will be regenerated during signing
                     }
@@ -147,9 +153,12 @@ impl ArtifactProcessor {
                 if name == MANIFEST_NAME
                     || name == CERT_SF_NAME
                     || name == CERT_RSA_NAME
+                    || name == CERT_PUBLIC_KEY_NAME
                     || name.ends_with("/MANIFEST.MF")
                     || name.ends_with(".SF")
                     || name.ends_with(".RSA")
+                    || name.ends_with(".DSA")
+                    || name.ends_with(".EC")
                 {
                     continue; // Skip this file as it will be regenerated during signing
                 }
@@ -209,10 +218,12 @@ impl ArtifactProcessor {
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
         let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
+        let cert_bytes = Self::gen_cert(keys)?;
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
+        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let total_files = archive.len();
@@ -228,16 +239,18 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                if name.starts_with("META-INF/") {
-                    if name == MANIFEST_NAME
+                if name.starts_with("META-INF/")
+                    && (name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
+                        || name == CERT_PUBLIC_KEY_NAME
                         || name.ends_with("/MANIFEST.MF")
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
-                    {
-                        continue;
-                    }
+                        || name.ends_with(".DSA")
+                        || name.ends_with(".EC"))
+                {
+                    continue;
                 }
 
                 let options = FileOptions::<()>::default()
@@ -274,10 +287,6 @@ impl ArtifactProcessor {
                     // Set filesystem timestamp
                     let ft = FileTime::from_system_time(std::time::SystemTime::now());
                     set_file_times(&nested_signed, ft, ft)?;
-                    ui.verbose(&format!(
-                        "mtime set on nested archive: {}",
-                        nested_signed.display()
-                    ));
 
                     let mut nested_file = BufReader::new(File::open(&nested_signed)?);
                     loop {
@@ -314,7 +323,6 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
@@ -337,10 +345,12 @@ impl ArtifactProcessor {
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
         let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
+        let cert_bytes = Self::gen_cert(keys)?;
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
+        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
 
@@ -351,16 +361,18 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                if name.starts_with("META-INF/") {
-                    if name == MANIFEST_NAME
+                if name.starts_with("META-INF/")
+                    && (name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
+                        || name == CERT_PUBLIC_KEY_NAME
                         || name.ends_with("/MANIFEST.MF")
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
-                    {
-                        continue;
-                    }
+                        || name.ends_with(".DSA")
+                        || name.ends_with(".EC"))
+                {
+                    continue;
                 }
 
                 let options = FileOptions::<()>::default()
@@ -391,7 +403,6 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }
@@ -593,6 +604,16 @@ impl ArtifactProcessor {
         Ok(signature)
     }
 
+    fn gen_cert(keys: &KeyChain) -> Result<Vec<u8>, SignerError> {
+        // Extract the certificate DER bytes from the KeyChain
+        match &keys.cert_der {
+            Some(cert_der) => Ok(cert_der.clone()),
+            None => Err(SignerError::Config(
+                "Certificate data missing from KeyChain".into(),
+            )),
+        }
+    }
+
     fn verify_zip_integrity(path: &Path) -> Result<(), SignerError> {
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let mut buf = [0u8; BUFFER_SIZE];
@@ -638,10 +659,12 @@ impl ArtifactProcessor {
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
         let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
+        let cert_bytes = Self::gen_cert(keys)?;
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
+        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
 
@@ -652,16 +675,18 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                if name.starts_with("META-INF/") {
-                    if name == MANIFEST_NAME
+                if name.starts_with("META-INF/")
+                    && (name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
+                        || name == CERT_PUBLIC_KEY_NAME
                         || name.ends_with("/MANIFEST.MF")
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
-                    {
-                        continue;
-                    }
+                        || name.ends_with(".DSA")
+                        || name.ends_with(".EC"))
+                {
+                    continue;
                 }
 
                 let options = FileOptions::<()>::default()
@@ -692,7 +717,6 @@ impl ArtifactProcessor {
         let now = std::time::SystemTime::now();
         let ft = FileTime::from_system_time(now);
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("mtime set on output: {}", output.display()));
         Self::verify_zip_integrity(output)?;
         Ok(())
     }

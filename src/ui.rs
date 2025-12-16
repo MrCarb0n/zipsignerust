@@ -68,14 +68,12 @@ impl Ui {
 
         let bar_width = if max_width > total_reserved_space {
             max_width - total_reserved_space
+        } else if max_width > 20 {
+            5
+        } else if max_width > 15 {
+            3
         } else {
-            if max_width > 20 {
-                5
-            } else if max_width > 15 {
-                3
-            } else {
-                1
-            }
+            1
         }
         .max(1);
 
@@ -154,12 +152,10 @@ impl Ui {
                         } else {
                             format!("{} {}", icon_colored, line.normal())
                         }
+                    } else if is_dim {
+                        format!("{}{}", indent, line.dimmed())
                     } else {
-                        if is_dim {
-                            format!("{}{}", indent, line.dimmed())
-                        } else {
-                            format!("{}{}", indent, line.normal())
-                        }
+                        format!("{}{}", indent, line.normal())
                     }
                 })
                 .collect()
@@ -460,7 +456,33 @@ impl Ui {
         std::env::var("COLUMNS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .or_else(|| term_size::dimensions().map(|(w, _)| w))
+            .or_else(|| terminal_size::terminal_size().map(|(w, _)| w.0 as usize))
             .unwrap_or(80)
+    }
+
+    /// Shorten file paths for display
+    pub fn shorten_path(&self, path: &std::path::Path) -> String {
+        let path_str = path.display().to_string();
+        if path_str.len() > 50 {
+            // Get the last 3 path components and add "..." prefix
+            let components: Vec<_> = path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect();
+
+            if components.len() > 3 {
+                let last_three: Vec<_> = components[components.len() - 3..].to_vec();
+                format!(
+                    "...{}",
+                    std::path::Path::new("/")
+                        .join(last_three.join("/"))
+                        .display()
+                )
+            } else {
+                path_str
+            }
+        } else {
+            path_str
+        }
     }
 }
