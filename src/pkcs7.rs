@@ -1,4 +1,4 @@
-use crate::{error::SignerError, keys::KeyChain};
+use crate::{crypto::CryptoEngine, error::SignerError, keys::KeyChain};
 use simple_asn1::{ASN1Block, ASN1Class, BigInt, BigUint};
 use x509_parser::prelude::*;
 
@@ -14,12 +14,7 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
         "Certificate missing for signing".into(),
     ))?;
 
-    // 1. Sign the SF file (SHA-256 with PKCS#1 padding)
-    let mut signature_bytes = vec![0u8; key_pair.public().modulus_len()];
-    let rng = ring::rand::SystemRandom::new();
-    key_pair.sign(&signature::RSA_PKCS1_SHA256, &rng, sf, &mut signature_bytes)?;
-
-    // 2. Parse Certificate to get Issuer Name and Serial Number
+    // 1. Parse Certificate to get Issuer Name and Serial Number
     let (_, cert) = X509Certificate::from_der(cert_der)
         .map_err(|e| SignerError::Config(format!("Failed to parse cert for PKCS7: {}", e)))?;
 
@@ -28,15 +23,62 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     let serial_bytes = cert.tbs_certificate.serial.to_bytes_be();
     let serial_bigint = BigInt::from_signed_bytes_be(&serial_bytes);
 
-    // 3. Define OIDs
+    // 2. Define OIDs
     let oid_signed_data = simple_asn1::oid!(1, 2, 840, 113549, 1, 7, 2); // 1.2.840.113549.1.7.2 signedData
     let oid_data = simple_asn1::oid!(1, 2, 840, 113549, 1, 7, 1); // 1.2.840.113549.1.7.1 data
     let oid_sha256 = simple_asn1::oid!(2, 16, 840, 1, 101, 3, 4, 2, 1); // 2.16.840.1.101.3.4.2.1 sha256
     let oid_rsa = simple_asn1::oid!(1, 2, 840, 113549, 1, 1, 1); // 1.2.840.113549.1.1.1 rsaEncryption
 
-    // 4. Build the PKCS#7 SignedData structure
+    // 3. Create authenticated attributes (contentType and messageDigest)
+    // This is required for proper Android JAR signature verification
+    let auth_attrs = vec![
+        // contentType attribute (1.2.840.113549.1.9.3)
+        ASN1Block::Sequence(
+            0,
+            vec![
+                ASN1Block::ObjectIdentifier(0, simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 3)), // contentType OID
+                ASN1Block::Set(
+                    0,
+                    vec![
+                        ASN1Block::ObjectIdentifier(0, oid_data.clone()), // data content type
+                    ],
+                ),
+            ],
+        ),
+        // messageDigest attribute (1.2.840.113549.1.9.4)
+        ASN1Block::Sequence(
+            0,
+            vec![
+                ASN1Block::ObjectIdentifier(0, simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4)), // messageDigest OID
+                ASN1Block::Set(
+                    0,
+                    vec![ASN1Block::OctetString(
+                        0,
+                        CryptoEngine::compute_sha1(sf).as_bytes().to_vec(),
+                    )],
+                ),
+            ],
+        ),
+    ];
+
+    // 4. Sign the DER encoding of the authenticated attributes
+    // This is the correct way for PKCS#7 with authenticated attributes
+    let attrs_der = simple_asn1::to_der(&ASN1Block::Set(0, auth_attrs.clone())).map_err(|e| {
+        SignerError::Config(format!("ASN1 encode error for authenticated attrs: {}", e))
+    })?;
+
+    let mut signature_bytes = vec![0u8; key_pair.public().modulus_len()];
+    let rng = ring::rand::SystemRandom::new();
+    key_pair.sign(
+        &signature::RSA_PKCS1_SHA256,
+        &rng,
+        &attrs_der,
+        &mut signature_bytes,
+    )?;
+
+    // 5. Build the PKCS#7 SignedData structure - Proper authenticated JAR signature format
     let signed_data_content = vec![
-        ASN1Block::Integer(0, BigInt::from(1u32)), // version
+        ASN1Block::Integer(0, BigInt::from(1u32)), // version - with authenticated attributes, it should be 1
         ASN1Block::Set(
             0,
             vec![
@@ -50,17 +92,12 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
                 ),
             ],
         ),
-        // encapContentInfo
+        // encapContentInfo - Content is omitted for JAR signatures
         ASN1Block::Sequence(
             0,
             vec![
                 ASN1Block::ObjectIdentifier(0, oid_data),
-                ASN1Block::Explicit(
-                    ASN1Class::ContextSpecific,
-                    0,
-                    BigUint::from(0u32),
-                    Box::new(ASN1Block::OctetString(0, sf.to_vec())),
-                ),
+                // Content is omitted per JAR signature specification
             ],
         ),
         // certificates [0] EXPLICIT SET OF Certificate
@@ -89,7 +126,7 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
                 0,
                 vec![
                     // SignerInfo
-                    ASN1Block::Integer(0, BigInt::from(1u32)), // version
+                    ASN1Block::Integer(0, BigInt::from(1u32)), // version - for PKCS#7 with authenticated attributes
                     // issuerAndSerialNumber
                     ASN1Block::Sequence(
                         0,
@@ -109,16 +146,21 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
                     ASN1Block::Sequence(
                         0,
                         vec![
-                            ASN1Block::ObjectIdentifier(0, oid_sha256),
+                            ASN1Block::ObjectIdentifier(0, oid_sha256.clone()),
                             ASN1Block::Null(0),
                         ],
                     ),
-                    // signatureAlgorithm
+                    // authenticatedAttributes - the attributes that were signed
+                    ASN1Block::Set(0, auth_attrs),
+                    // digestEncryptionAlgorithm
                     ASN1Block::Sequence(
                         0,
-                        vec![ASN1Block::ObjectIdentifier(0, oid_rsa), ASN1Block::Null(0)],
+                        vec![
+                            ASN1Block::ObjectIdentifier(0, oid_rsa), // rsaEncryption
+                            ASN1Block::Null(0),
+                        ],
                     ),
-                    // signature
+                    // encryptedDigest - signature of the authenticated attributes
                     ASN1Block::OctetString(0, signature_bytes),
                 ],
             )],

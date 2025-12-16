@@ -595,16 +595,6 @@ impl ArtifactProcessor {
         crate::pkcs7::gen_rsa(keys, sf)
     }
 
-    fn gen_cert(keys: &KeyChain) -> Result<Vec<u8>, SignerError> {
-        // Extract the certificate DER bytes from the KeyChain
-        match &keys.cert_der {
-            Some(cert_der) => Ok(cert_der.clone()),
-            None => Err(SignerError::Config(
-                "Certificate data missing from KeyChain".into(),
-            )),
-        }
-    }
-
     fn verify_zip_integrity(path: &Path) -> Result<(), SignerError> {
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let mut buf = [0u8; BUFFER_SIZE];
