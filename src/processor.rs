@@ -217,13 +217,12 @@ impl ArtifactProcessor {
 
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
-        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
-        let cert_bytes = Self::gen_cert(keys)?;
+        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?; // Now contains cert + signature
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
-        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
+        // Removed CERT.DSA writing as the cert is now properly inside CERT.RSA
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let total_files = archive.len();
@@ -344,13 +343,12 @@ impl ArtifactProcessor {
 
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
-        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
-        let cert_bytes = Self::gen_cert(keys)?;
+        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?; // Now contains cert + signature
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
-        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
+        // Removed CERT.DSA writing as the cert is now properly inside CERT.RSA
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
 
@@ -594,19 +592,7 @@ impl ArtifactProcessor {
     }
 
     fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
-        use ring::signature;
-
-        let key_pair = keys.private_key.as_ref().ok_or(SignerError::Config(
-            "Private key missing for signing".into(),
-        ))?;
-
-        // Create signature using SHA-256 with PKCS#1 padding
-        let mut signature_bytes = vec![0u8; key_pair.public().modulus_len()];
-        let rng = ring::rand::SystemRandom::new();
-        key_pair.sign(&signature::RSA_PKCS1_SHA256, &rng, sf, &mut signature_bytes)?;
-
-        // Return the raw signature bytes - traditional JAR signing format for .RSA file
-        Ok(signature_bytes)
+        crate::pkcs7::gen_rsa(keys, sf)
     }
 
     fn gen_cert(keys: &KeyChain) -> Result<Vec<u8>, SignerError> {
@@ -663,13 +649,12 @@ impl ArtifactProcessor {
 
         let manifest_bytes = Self::gen_manifest(digests);
         let sf_bytes = Self::gen_sf(&manifest_bytes, digests);
-        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?;
-        let cert_bytes = Self::gen_cert(keys)?;
+        let rsa_bytes = Self::gen_rsa(keys, &sf_bytes)?; // Now contains cert + signature
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &manifest_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_SF_NAME, &sf_bytes, timestamp)?;
         Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa_bytes, timestamp)?;
-        Self::write_entry(&mut writer, CERT_PUBLIC_KEY_NAME, &cert_bytes, timestamp)?;
+        // Removed CERT.DSA writing as the cert is now properly inside CERT.RSA
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
 
