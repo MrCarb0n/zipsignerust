@@ -48,42 +48,46 @@ impl KeyChain {
     }
 
     fn load_private_key(path: Option<&Path>, ui: &Ui) -> Result<Option<RsaKeyPair>, SignerError> {
-        let content = if let Some(p) = path {
-            Self::check_key_permissions(p, ui)?;
-            fs::read(p)?
-        } else {
-            // Warn about using development keys
-            ui.warn("Using dev key. For production: -k flag.");
-            crate::certificate::PRIVATE_KEY.as_bytes().to_vec()
+        let content = match path {
+            Some(p) => {
+                Self::check_key_permissions(p, ui)?;
+                fs::read(p)?
+            }
+            None => {
+                ui.warn("Using dev key. For production: -k flag.");
+                crate::certificate::PRIVATE_KEY.as_bytes().to_vec()
+            }
         };
 
-        let key_pair = if let Ok(pem) = pem_crate::parse(&content) {
-            RsaKeyPair::from_pkcs8(pem.contents())
-                .map_err(|e| SignerError::Config(format!("Invalid PEM private key: {}", e)))?
-        } else {
-            ui.verbose("Input is not PEM, attempting to parse as binary PK8/DER...");
-            RsaKeyPair::from_pkcs8(&content)
-                .map_err(|e| SignerError::Config(format!("Invalid private key format: {}", e)))?
+        let key_pair = match pem_crate::parse(&content) {
+            Ok(pem) => RsaKeyPair::from_pkcs8(pem.contents())
+                .map_err(|e| SignerError::Config(format!("Invalid PEM private key: {}", e)))?,
+            Err(_) => {
+                ui.verbose("Input is not PEM, attempting to parse as binary PK8/DER...");
+                RsaKeyPair::from_pkcs8(&content).map_err(|e| {
+                    SignerError::Config(format!("Invalid private key format: {}", e))
+                })?
+            }
         };
 
         Ok(Some(key_pair))
     }
 
     fn load_public_key(path: Option<&Path>, ui: &Ui) -> Result<LoadedPublicKey, SignerError> {
-        let content = if let Some(p) = path {
-            fs::read(p)?
-        } else {
-            // Warn about using development certificate
-            ui.warn("Using dev cert. For production: -p flag.");
-            crate::certificate::PUBLIC_KEY.as_bytes().to_vec()
+        let content = match path {
+            Some(p) => fs::read(p)?,
+            None => {
+                ui.warn("Using dev cert. For production: -p flag.");
+                crate::certificate::PUBLIC_KEY.as_bytes().to_vec()
+            }
         };
 
-        let cert_der = if let Ok(pem) = pem_crate::parse(&content) {
-            pem.contents().to_vec()
-        } else {
-            // Assume raw DER (X.509 binary)
-            ui.verbose("Input is not PEM, attempting to parse as binary X.509 DER...");
-            content
+        let cert_der = match pem_crate::parse(&content) {
+            Ok(pem) => pem.contents().to_vec(),
+            Err(_) => {
+                ui.verbose("Input is not PEM, attempting to parse as binary X.509 DER...");
+                content
+            }
         };
 
         let (_, cert) = X509Certificate::from_der(&cert_der)

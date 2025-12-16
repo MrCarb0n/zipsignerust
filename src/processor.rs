@@ -222,16 +222,13 @@ impl ArtifactProcessor {
             ui.show_progress_bar(total_files as u64, "Writing files");
         }
 
-        // Use thread-local buffer to avoid allocations in the hot path
         PROCESSING_BUFFER.with(|local_buf| {
             let mut buf = local_buf.borrow_mut();
             for i in 0..archive.len() {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                // Only skip the signature-related files in META-INF, but preserve other META-INF files
                 if name.starts_with("META-INF/") {
-                    // Skip only the signature files that we'll replace with new ones
                     if name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
@@ -239,9 +236,8 @@ impl ArtifactProcessor {
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
                     {
-                        continue; // Skip this file as we'll write our own versions
+                        continue;
                     }
-                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
                 }
 
                 let options = FileOptions::<()>::default()
@@ -355,9 +351,7 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                // Only skip the signature-related files in META-INF, but preserve other META-INF files
                 if name.starts_with("META-INF/") {
-                    // Skip only the signature files that we'll replace with new ones
                     if name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
@@ -365,9 +359,8 @@ impl ArtifactProcessor {
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
                     {
-                        continue; // Skip this file as we'll write our own versions
+                        continue;
                     }
-                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
                 }
 
                 let options = FileOptions::<()>::default()
@@ -438,48 +431,45 @@ impl ArtifactProcessor {
             ));
         }
 
-        let year: u16 = date_parts[0]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid year in timestamp".to_string()))?;
-        let month: u8 = date_parts[1]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid month in timestamp".to_string()))?;
-        let day: u8 = date_parts[2]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid day in timestamp".to_string()))?;
+        // Helper for parsing with error message
+        let parse_part = |part: &str, desc: &str| {
+            part.parse::<u16>()
+                .map_err(|_| SignerError::Config(format!("Invalid {} in timestamp", desc)))
+        };
 
-        let hour: u8 = time_parts[0]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid hour in timestamp".to_string()))?;
-        let minute: u8 = time_parts[1]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid minute in timestamp".to_string()))?;
-        let second: u8 = time_parts[2]
-            .parse()
-            .map_err(|_| SignerError::Config("Invalid second in timestamp".to_string()))?;
+        let year = parse_part(date_parts[0], "year")?;
+        let month = parse_part(date_parts[1], "month")? as u8;
+        let day = parse_part(date_parts[2], "day")? as u8;
+        let hour = parse_part(time_parts[0], "hour")? as u8;
+        let minute = parse_part(time_parts[1], "minute")? as u8;
+        let second = parse_part(time_parts[2], "second")? as u8;
 
         // Validate ranges
-        if !(1..=12).contains(&month) {
+        let (month_ok, day_ok, hour_ok, minute_ok, second_ok) = (
+            (1..=12).contains(&month),
+            (1..=31).contains(&day),
+            (0..=23).contains(&hour),
+            (0..=59).contains(&minute),
+            (0..=59).contains(&second),
+        );
+
+        if !month_ok {
             return Err(SignerError::Config(
                 "Month must be between 1 and 12".to_string(),
             ));
-        }
-        if !(1..=31).contains(&day) {
+        } else if !day_ok {
             return Err(SignerError::Config(
                 "Day must be between 1 and 31".to_string(),
             ));
-        }
-        if !((0..=23).contains(&hour)) {
+        } else if !hour_ok {
             return Err(SignerError::Config(
                 "Hour must be between 0 and 23".to_string(),
             ));
-        }
-        if !((0..=59).contains(&minute)) {
+        } else if !minute_ok {
             return Err(SignerError::Config(
                 "Minute must be between 0 and 59".to_string(),
             ));
-        }
-        if !((0..=59).contains(&second)) {
+        } else if !second_ok {
             return Err(SignerError::Config(
                 "Second must be between 0 and 59".to_string(),
             ));
@@ -508,20 +498,43 @@ impl ArtifactProcessor {
     }
 
     fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
-        let line = format!("{}: {}", key, value).into_bytes();
-        let mut cursor = 0;
-        let len = line.len();
-        while cursor < len {
-            let remaining = len - cursor;
-            let limit = if cursor == 0 { 72 } else { 71 };
-            let chunk_size = std::cmp::min(remaining, limit);
-            if cursor > 0 {
-                out.push(b' ');
-            }
-            out.extend_from_slice(&line[cursor..cursor + chunk_size]);
+        // Check if this field should not be wrapped according to JAR specification
+        // This ensures Name fields, digest values, and other critical fields stay on one continuous line
+        if Self::is_non_wrapping_field(key) {
+            // Write the full line without wrapping for Name fields, digest values, etc.
+            // Explicitly avoid any potential for line breaks by joining key, value with colon-space
+            let line = format!("{}: {}", key, value);
+            out.extend_from_slice(line.as_bytes());
             out.extend_from_slice(b"\r\n");
-            cursor += chunk_size;
+        } else {
+            // Apply line wrapping for other fields (RFC 2822-style)
+            let line = format!("{}: {}", key, value).into_bytes();
+            let mut cursor = 0;
+            let len = line.len();
+            while cursor < len {
+                let remaining = len - cursor;
+                let limit = if cursor == 0 { 72 } else { 71 };
+                let chunk_size = std::cmp::min(remaining, limit);
+                if cursor > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(&line[cursor..cursor + chunk_size]);
+                out.extend_from_slice(b"\r\n");
+                cursor += chunk_size;
+            }
         }
+    }
+
+    /// Check if the field should not be line-wrapped according to JAR specification
+    /// This ensures that headers like Name, SHA1-Digest, etc. stay on one continuous line
+    fn is_non_wrapping_field(key: &str) -> bool {
+        // Name field should not wrap as it contains file paths
+        key == "Name" ||
+        // All digest fields including SHA1-Digest, SHA-256-Digest, MD5-Digest, etc.
+        key.contains("-Digest") || key.contains("_Digest") ||
+        // Also handle the specific manifest digest fields
+        key == "SHA1-Digest-Manifest" || key == "SHA-256-Digest-Manifest" ||
+        key == "MD5-Digest-Manifest"
     }
 
     fn create_manifest_entry(name: &str, hash: &str) -> Vec<u8> {
@@ -593,8 +606,7 @@ impl ArtifactProcessor {
                 }
                 hasher.update(&buf[..n]);
             }
-            let stored = f.crc32();
-            let computed = hasher.clone().finalize();
+            let (stored, computed) = (f.crc32(), hasher.finalize());
             if stored != computed {
                 return Err(SignerError::Validation(format!(
                     "CRC mismatch for `{}`: stored={:#010x}, computed={:#010x}",
@@ -640,9 +652,7 @@ impl ArtifactProcessor {
                 let mut file = archive.by_index(i)?;
                 let name = file.name().to_string();
 
-                // Only skip the signature-related files in META-INF, but preserve other META-INF files
                 if name.starts_with("META-INF/") {
-                    // Skip only the signature files that we'll replace with new ones
                     if name == MANIFEST_NAME
                         || name == CERT_SF_NAME
                         || name == CERT_RSA_NAME
@@ -650,9 +660,8 @@ impl ArtifactProcessor {
                         || name.ends_with(".SF")
                         || name.ends_with(".RSA")
                     {
-                        continue; // Skip this file as we'll write our own versions
+                        continue;
                     }
-                    // Otherwise, preserve non-signature META-INF files (like keystore files, etc.)
                 }
 
                 let options = FileOptions::<()>::default()

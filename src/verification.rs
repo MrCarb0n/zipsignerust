@@ -9,9 +9,8 @@ use std::io::Read;
 use zip::ZipArchive;
 
 use crate::{
-    error::SignerError,
-    signing::{CryptoEngine, KeyChain},
-    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    crypto::CryptoEngine, error::SignerError, keys::KeyChain, CERT_RSA_NAME, CERT_SF_NAME,
+    MANIFEST_NAME,
 };
 
 /// Verifies signatures on Android archive files
@@ -90,7 +89,6 @@ impl ArtifactVerifier {
                 continue;
             }
 
-            // Skip signature-related files in META-INF since they are not part of the content hashes
             if name.starts_with("META-INF/")
                 && (name == crate::MANIFEST_NAME
                     || name == crate::CERT_SF_NAME
@@ -101,7 +99,6 @@ impl ArtifactVerifier {
             {
                 continue;
             }
-            // Otherwise, include non-signature META-INF files in verification
 
             let mut hasher_input = Vec::new();
             loop {
@@ -159,13 +156,13 @@ impl ArtifactVerifier {
     fn unfold_lines(s: &str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for line in s.split("\r\n") {
-            if let Some(last) = out.last_mut() {
+            if let Some(last) = out.last_mut().filter(|_| line.starts_with(' ')) {
                 if let Some(stripped) = line.strip_prefix(' ') {
                     last.push_str(stripped);
-                    continue;
                 }
+            } else {
+                out.push(line.to_string());
             }
-            out.push(line.to_string());
         }
         out
     }
@@ -174,42 +171,60 @@ impl ArtifactVerifier {
         let mut map = std::collections::BTreeMap::new();
         let mut cur_name: Option<String> = None;
         let mut cur_digest: Option<String> = None;
+
         for line in lines {
             if line.is_empty() {
-                if let (Some(n), Some(d)) = (cur_name.take(), cur_digest.take()) {
-                    map.insert(n, d);
+                if let (Some(name), Some(digest)) = (cur_name.take(), cur_digest.take()) {
+                    map.insert(name, digest);
                 }
                 continue;
             }
+
             if let Some(rest) = line.strip_prefix("Name: ") {
                 cur_name = Some(rest.to_string());
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("SHA1-Digest: ") {
+            } else if let Some(rest) = line.strip_prefix("SHA1-Digest: ") {
                 cur_digest = Some(rest.to_string());
-                continue;
             }
         }
-        if let (Some(n), Some(d)) = (cur_name.take(), cur_digest.take()) {
-            map.insert(n, d);
+
+        if let (Some(name), Some(digest)) = (cur_name.take(), cur_digest.take()) {
+            map.insert(name, digest);
         }
         map
     }
 
     fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
-        let line = format!("{}: {}", key, value).into_bytes();
-        let mut cursor = 0;
-        let len = line.len();
-        while cursor < len {
-            let remaining = len - cursor;
-            let limit = if cursor == 0 { 72 } else { 71 };
-            let chunk_size = std::cmp::min(remaining, limit);
-            if cursor > 0 {
-                out.push(b' ');
-            }
-            out.extend_from_slice(&line[cursor..cursor + chunk_size]);
+        // Check if this field should not be wrapped according to JAR specification
+        // Using the same comprehensive check as in processor module
+        let should_not_wrap = key == "Name"
+            || key.contains("-Digest")
+            || key.contains("_Digest")
+            || key == "SHA1-Digest-Manifest"
+            || key == "SHA-256-Digest-Manifest"
+            || key == "MD5-Digest-Manifest";
+
+        if should_not_wrap {
+            // Write the full line without wrapping for Name fields, digest values, etc.
+            // Explicitly avoid any potential for line breaks by joining key, value with colon-space
+            let line = format!("{}: {}", key, value);
+            out.extend_from_slice(line.as_bytes());
             out.extend_from_slice(b"\r\n");
-            cursor += chunk_size;
+        } else {
+            // Apply line wrapping for other fields (RFC 2822-style)
+            let line = format!("{}: {}", key, value).into_bytes();
+            let mut cursor = 0;
+            let len = line.len();
+            while cursor < len {
+                let remaining = len - cursor;
+                let limit = if cursor == 0 { 72 } else { 71 };
+                let chunk_size = std::cmp::min(remaining, limit);
+                if cursor > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(&line[cursor..cursor + chunk_size]);
+                out.extend_from_slice(b"\r\n");
+                cursor += chunk_size;
+            }
         }
     }
 

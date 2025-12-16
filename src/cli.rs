@@ -7,7 +7,7 @@
 use crate::{
     config::{self, Config},
     error::SignerError,
-    signing::{self, KeyChain},
+    keys::KeyChain,
     ui::Ui,
     verification::ArtifactVerifier,
     *,
@@ -200,7 +200,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             }
 
             ui.info("Computing digests...");
-            let nested = signing::ArtifactProcessor::compute_digests_prepare_nested(
+            let nested = processor::ArtifactProcessor::compute_digests_prepare_nested(
                 &config.input_path,
                 &key_chain,
                 ui,
@@ -216,7 +216,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             };
 
             ui.info("Signing artifact...");
-            match signing::ArtifactProcessor::write_signed_zip_with_sources(
+            match processor::ArtifactProcessor::write_signed_zip_with_sources(
                 &working_input,
                 &config.output_path,
                 &key_chain,

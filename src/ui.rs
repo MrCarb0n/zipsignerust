@@ -44,71 +44,58 @@ impl Ui {
     pub fn show_progress_bar(&self, len: u64, message: &str) {
         let pb = ProgressBar::new(len);
 
-        // Get terminal width to calculate appropriate progress bar size
         let term_width = self.get_terminal_width();
         let max_width = if term_width > 0 { term_width } else { 80 };
 
-        // Calculate expected lengths of other components in the template
-        // Format: {spinner:.green} [elapsed_precise] message {bar:width.green/red} pos/len (eta)
         let pos_len = len.to_string().len();
-        let position_display_len = 2 * pos_len + 1; // for "123/456" format (~2*len + 1 for separator)
+        let position_display_len = 2 * pos_len + 1;
 
-        // Determine an appropriate message length for narrow screens
         let effective_message = if max_width < 60 && message.chars().count() > 15 {
-            // For narrow screens, truncate message if it's too long using char boundaries
             let truncated_msg: String = message.chars().take(15).collect();
             format!("{}...", truncated_msg)
         } else {
             message.to_string()
         };
 
-        // Calculate space needed for other elements in the format:
-        // {spinner:.green} [elapsed_precise] message {wide_bar:.green/red} pos/len (eta)
-        let spinner_space = 3;        // "~ " + space
-        let time_space = 13;          // "[00:00:01]" + space
-        let message_space = effective_message.len() + 1;  // message + space
-        let position_space = position_display_len + 1;    // "1234/5678" + space
-        let eta_space = 9;            // "(~99m)" + space
+        let spinner_space = 3;
+        let time_space = 0; // Removed elapsed timestamp since ETA shows remaining time
+        let message_space = effective_message.len() + 1;
+        let position_space = position_display_len + 1;
+        let eta_space = 9;
 
-        let total_reserved_space = spinner_space + time_space + message_space + position_space + eta_space;
+        let total_reserved_space =
+            spinner_space + time_space + message_space + position_space + eta_space;
 
         let bar_width = if max_width > total_reserved_space {
             max_width - total_reserved_space
         } else {
-            // For very narrow terminals, calculate a minimal but usable bar width
-            let minimal_bar_width = if max_width > 20 {
-                5  // Reasonable bar width when terminal is 20+ chars
+            if max_width > 20 {
+                5
             } else if max_width > 15 {
-                3  // Minimal bar when terminal is 15-20 chars
+                3
             } else {
-                1  // Absolute minimum when terminal is extremely narrow
-            };
-            minimal_bar_width
+                1
+            }
         }
-        .max(1); // Ensure minimum 1 character for the bar to be visible
+        .max(1);
 
-        // Use a template that adapts to terminal width with ASCII characters
-        // Use wide format that automatically fills available space
         let template = format!(
-            "{{spinner:.green}} [{{elapsed_precise}}] {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}})",
+            "{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}})",
             effective_message
         );
 
-        // Use a fallback template if the custom template fails
         let style = ProgressStyle::default_bar()
             .template(&template)
             .unwrap_or_else(|_| {
-                // Fallback to fixed-width if wide_bar doesn't work
                 let fallback_template = format!(
-                    "{{spinner:.green}} [{{elapsed_precise}}] {} {{bar:{}.green}} {{pos}}/{{len}} ({{eta}})",
-                    effective_message,
-                    bar_width
+                    "{{spinner:.green}} {} {{bar:{}.green}} {{pos}}/{{len}} ({{eta}})",
+                    effective_message, bar_width
                 );
                 ProgressStyle::default_bar()
                     .template(&fallback_template)
                     .expect("Fallback template should always be valid")
             })
-            // Customize the progress bar to use ASCII characters instead of Unicode
+            .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
             .progress_chars("#>-");
 
         pb.set_style(style);
@@ -121,29 +108,28 @@ impl Ui {
 
     /// Updates the progress bar position
     pub fn update_progress(&self, pos: u64) {
-        if let Ok(guard) = self.progress_bar.lock() {
-            if let Some(ref pb) = *guard {
+        let _ = self.progress_bar.lock().map(|g| {
+            if let Some(ref pb) = *g {
                 pb.set_position(pos);
             }
-        }
+        });
     }
 
     /// Finishes and hides the progress bar
     pub fn finish_progress(&self) {
-        if let Ok(guard) = self.progress_bar.lock() {
-            if let Some(ref pb) = *guard {
+        let _ = self.progress_bar.lock().map(|g| {
+            if let Some(ref pb) = *g {
                 pb.finish_and_clear();
             }
-        }
+        });
     }
 
     /// Check if a progress bar exists
     pub fn has_progress_bar(&self) -> bool {
-        if let Ok(guard) = self.progress_bar.lock() {
-            guard.is_some()
-        } else {
-            false
-        }
+        self.progress_bar
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
     }
 
     fn paint(&self, icon: &str, msg: &str, color: &str, _is_error: bool, is_dim: bool) {
@@ -151,55 +137,59 @@ impl Ui {
             return;
         }
 
-        // Format long messages with nice wrapping (without the indentation added here)
         let wrapped_content = self.format_message_with_wrap(msg, 0);
         let wrapped_lines: Vec<&str> = wrapped_content.split('\n').collect();
+        let icon_len = icon.len() + 1; // +1 for the space after icon
+        let indent = " ".repeat(icon_len);
 
-        if self.supports_color() {
+        let lines_with_prefix: Vec<String> = if self.supports_color() {
             let icon_colored = self.colored_icon(icon, color);
-
-            for (i, line) in wrapped_lines.iter().enumerate() {
-                if i == 0 {
-                    // First line has icon
-                    let line_output = if is_dim {
-                        format!("{} {}", icon_colored.dimmed(), line.dimmed())
+            wrapped_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        if is_dim {
+                            format!("{} {}", icon_colored.dimmed(), line.dimmed())
+                        } else {
+                            format!("{} {}", icon_colored, line.normal())
+                        }
                     } else {
-                        format!("{} {}", icon_colored, line.normal())
-                    };
-                    eprintln!("{}", line_output);
-                } else {
-                    // Subsequent lines have indentation equal to icon length + space
-                    let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
-                    let line_output = if is_dim {
-                        format!("{}{}", indent, line.dimmed())
-                    } else {
-                        format!("{}{}", indent, line.normal())
-                    };
-                    eprintln!("{}", line_output);
-                }
-            }
+                        if is_dim {
+                            format!("{}{}", indent, line.dimmed())
+                        } else {
+                            format!("{}{}", indent, line.normal())
+                        }
+                    }
+                })
+                .collect()
         } else {
-            for (i, line) in wrapped_lines.iter().enumerate() {
-                if i == 0 {
-                    // First line has icon
-                    eprintln!("{} {}", icon, line);
-                } else {
-                    // Subsequent lines have indentation equal to icon length + space
-                    let indent = " ".repeat(icon.len() + 1); // +1 for the space after icon
-                    eprintln!("{}{}", indent, line);
-                }
-            }
+            wrapped_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        format!("{} {}", icon, line)
+                    } else {
+                        format!("{}{}", indent, line)
+                    }
+                })
+                .collect()
+        };
+
+        for line in lines_with_prefix {
+            eprintln!("{}", line);
         }
     }
 
     /// Helper function to create colored icons
     fn colored_icon(&self, icon: &str, color: &str) -> String {
         match color {
-            COLOR_RED => icon.red().bold().to_string(),     // Red
-            COLOR_GREEN => icon.green().bold().to_string(), // Green
-            COLOR_YELLOW => icon.yellow().bold().to_string(), // Yellow
-            COLOR_BLUE => icon.blue().bold().to_string(),   // Blue
-            COLOR_CYAN => icon.cyan().bold().to_string(),   // Cyan
+            COLOR_RED => icon.red().bold().to_string(),
+            COLOR_GREEN => icon.green().bold().to_string(),
+            COLOR_YELLOW => icon.yellow().bold().to_string(),
+            COLOR_BLUE => icon.blue().bold().to_string(),
+            COLOR_CYAN => icon.cyan().bold().to_string(),
             _ => icon.bold().to_string(),
         }
     }
@@ -251,21 +241,13 @@ impl Ui {
     }
 
     fn supports_color(&self) -> bool {
-        // Check NO_COLOR environment variable first
-        if std::env::var("NO_COLOR").is_ok() {
+        if std::env::var("NO_COLOR").is_ok() || !self.colors {
             return false;
         }
 
-        // Check if colors are explicitly disabled
-        if !self.colors {
-            return false;
-        }
-
-        // On Windows, check if terminal supports colors
         #[cfg(windows)]
         {
             if !colored::control::SHOULD_COLORIZE.should_colorize() {
-                // Try to enable color support on Windows
                 colored::control::set_override(true);
             }
         }
@@ -277,21 +259,16 @@ impl Ui {
     pub fn enable_colors_if_supported(&mut self) {
         #[cfg(windows)]
         {
-            // On Windows, enable color support
             if self.colors {
                 colored::control::set_override(true);
             }
         }
-
-        // On Unix systems, colors are typically supported by default
-        // unless NO_COLOR is set
     }
 
     pub fn print_mode_header(&self, title: &str) {
         if self.silent || !self.verbose {
             return;
         }
-        // Add spacing before mode header for better visual separation
         eprintln!();
         if self.colors {
             eprintln!("{}", format!("-- {} --", title).yellow().bold());
@@ -342,26 +319,21 @@ impl Ui {
         }
 
         for (key, val) in fields {
-            let formatted_val = self.format_message_with_wrap(val, key.len() + 10); // 2 spaces + 8 from {:<8}
+            let indent = " ".repeat(key.len() + 10);
+            let wrapped_content = self.format_message_with_wrap(val, key.len() + 10);
+            let wrapped_lines: Vec<&str> = wrapped_content.split('\n').collect();
 
-            // Split and properly format with indentation
-            let value_lines: Vec<String> =
-                formatted_val.split('\n').map(|s| s.to_string()).collect();
-
-            for (i, line) in value_lines.iter().enumerate() {
+            for (i, line) in wrapped_lines.iter().enumerate() {
                 if i == 0 {
                     if self.colors {
-                        eprintln!("  {:<8} {}", key.cyan().bold(), line.as_str().green());
+                        eprintln!("  {:<8} {}", key.cyan().bold(), line.green());
                     } else {
-                        eprintln!("  {:<8} {}", key, line.as_str());
+                        eprintln!("  {:<8} {}", key, line);
                     }
+                } else if self.colors {
+                    eprintln!("{}{}", indent, line.green());
                 } else {
-                    let indent = " ".repeat(key.len() + 10); // Match the field alignment
-                    if self.colors {
-                        eprintln!("{}{}", indent, line.as_str().green());
-                    } else {
-                        eprintln!("{}{}", indent, line.as_str());
-                    }
+                    eprintln!("{}{}", indent, line);
                 }
             }
         }
@@ -370,7 +342,6 @@ impl Ui {
     /// Prints a formatted table from Vec<&str> rows
     pub fn print_table(&self, headers: &[&str], rows: Vec<Vec<String>>) {
         if self.colors {
-            // Just print a formatted table for wider terminals
             let header_str = headers.join(" │ ");
             println!("{}", format!("┌─ {} ─┐", header_str).bold().bright_white());
 
@@ -420,9 +391,8 @@ impl Ui {
             );
         } else {
             for (key, value) in data {
-                let formatted_val = self.format_message_with_wrap(value, key.len() + 10); // 8 from {:<8} + 2 for " : "
+                let formatted_val = self.format_message_with_wrap(value, key.len() + 10);
 
-                // Split and properly format with indentation
                 let value_lines: Vec<String> =
                     formatted_val.split('\n').map(|s| s.to_string()).collect();
 
@@ -430,7 +400,7 @@ impl Ui {
                     if i == 0 {
                         println!("{:<8} : {}", key, line.as_str());
                     } else {
-                        let indent = " ".repeat(key.len() + 10); // Match the field alignment
+                        let indent = " ".repeat(key.len() + 10);
                         println!("{}  {}", indent, line.as_str());
                     }
                 }
@@ -440,17 +410,11 @@ impl Ui {
 
     /// Format and wrap long text messages with proper indentation
     pub fn format_message_with_wrap(&self, message: &str, indent: usize) -> String {
-        // Get terminal width if available, default to 80 if not
         let term_width = self.get_terminal_width();
         let max_width = if term_width > 0 { term_width } else { 80 };
+        let effective_width = max_width.saturating_sub(indent).max(10); // Minimum width of 10
 
-        let effective_width = if max_width > indent {
-            max_width - indent
-        } else {
-            80 - indent
-        };
-
-        let mut lines = Vec::with_capacity(4); // Pre-allocate for efficiency
+        let mut lines = Vec::with_capacity(4);
         let mut current_line = String::with_capacity(effective_width);
 
         for word in message.split_whitespace() {
@@ -466,23 +430,19 @@ impl Ui {
                 }
                 current_line.push_str(word);
             } else {
-                // Add the current line to lines before starting a new one
                 if !current_line.is_empty() {
-                    lines.push(std::mem::take(&mut current_line)); // Use std::mem::take to move the value out
+                    lines.push(std::mem::take(&mut current_line));
                 }
 
-                // Start new line with this word if it fits in a single line
                 if word.len() <= effective_width {
                     current_line.push_str(word);
                 } else {
-                    // If the word is too long for a single line, break it
-                    let mut word_chars = word.chars();
-                    let chunk = word_chars.by_ref().take(effective_width).collect::<String>();
+                    // Break long word into chunks
+                    let mut chars = word.chars();
+                    let chunk: String = chars.by_ref().take(effective_width).collect();
                     lines.push(chunk);
-                    // Handle remaining part of the long word
-                    let remaining: String = word_chars.collect();
-                    if !remaining.is_empty() {
-                        current_line.push_str(&remaining);
+                    if let Some(remaining) = chars.as_str().into() {
+                        current_line.push_str(remaining);
                     }
                 }
             }
@@ -497,13 +457,10 @@ impl Ui {
 
     /// Get the width of the terminal (or default to 80 if not available)
     fn get_terminal_width(&self) -> usize {
-        // Try to use term_size if available, otherwise default to 80
-        match std::env::var("COLUMNS") {
-            Ok(columns_str) => columns_str.parse().unwrap_or(80),
-            Err(_) => {
-                // Fallback to using the term_size crate if available
-                term_size::dimensions().map(|(w, _)| w).unwrap_or(80)
-            }
-        }
+        std::env::var("COLUMNS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| term_size::dimensions().map(|(w, _)| w))
+            .unwrap_or(80)
     }
 }
