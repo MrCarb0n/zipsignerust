@@ -594,14 +594,19 @@ impl ArtifactProcessor {
     }
 
     fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
+        use ring::signature;
+
         let key_pair = keys.private_key.as_ref().ok_or(SignerError::Config(
             "Private key missing for signing".into(),
         ))?;
-        let mut signature = vec![0u8; key_pair.public().modulus_len()];
+
+        // Create signature using SHA-256 with PKCS#1 padding
+        let mut signature_bytes = vec![0u8; key_pair.public().modulus_len()];
         let rng = ring::rand::SystemRandom::new();
-        let rsa_signature_scheme = crate::keys::RSA_SIGNATURE_SCHEME;
-        key_pair.sign(rsa_signature_scheme, &rng, sf, &mut signature)?;
-        Ok(signature)
+        key_pair.sign(&signature::RSA_PKCS1_SHA256, &rng, sf, &mut signature_bytes)?;
+
+        // Return the raw signature bytes - traditional JAR signing format for .RSA file
+        Ok(signature_bytes)
     }
 
     fn gen_cert(keys: &KeyChain) -> Result<Vec<u8>, SignerError> {

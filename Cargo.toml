@@ -32,6 +32,7 @@ colored = { version = "2.1", default-features = false }
 indicatif = { version = "0.17", default-features = false }
 tabled = { version = "0.15", default-features = false }
 terminal_size = "0.3"
+simple_asn1 = "0.6"
 
 
 [profile.release]
