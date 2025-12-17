@@ -37,7 +37,7 @@ pub fn run() -> Result<(), SignerError> {
         .arg_required_else_help(true)
         .subcommand(
             Command::new("sign")
-                .about("Sign a ZIP/APK/JAR archive")
+                .about("Sign a ZIP archive")
                 .arg_required_else_help(true)
                 .arg(
                     Arg::new("input")

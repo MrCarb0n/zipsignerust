@@ -2,26 +2,32 @@
 
 # ZipSignerust
 
-**High-performance, memory-safe cryptographic signing and verification for Android ZIP/APK/JAR packages.**
+**High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases) 
 </div>
 
 ---
 
-**ZipSignerust** is a deterministic, high-performance tool written in Rust to sign and verify Android ZIP, APK, and JAR archives. It ensures reproducible builds by using certificate creation timestamps and supports recursive signing of nested archives.
+**ZipSignerust** is a deterministic, high-performance tool written in Rust to sign and verify Android ZIP archives. It ensures reproducible builds by using certificate creation timestamps and supports recursive signing of nested ZIP archives.
 
 ## 🚀 Key Features
 
-- **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety.
+- **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety with optimized allocation using `mimalloc`.
 - **🔒 Deterministic timestamps:** Uses the certificate's creation date for all ZIP entries (reproducible builds).
-- **📂 Recursive Signing:** Automatically detects and signs nested `.zip`, `.jar`, and `.apk` files inside archives.
-- **🛡️ Secure:** Uses RSA-2048 with SHA-256 digests (standard Android safety).
+- **🔍 Recursive Signing:** Automatically detects and signs nested `.zip` files inside archives.
+- **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-1/SHA-256) for signature generation and verification.
 - **💾 In-Place Signing:** Smart `--inplace` mode with automatic backup for efficient workflow.
 - **🔑 Flexible Keys:** Use your own PK8/PEM keys or fallback to embedded developer keys for quick testing.
-- **✅ Verification:** Verify the integrity and authenticity of existing archives.
+- **✅ Comprehensive Verification:** Verify the integrity and authenticity of existing archives with detailed validation.
 - **🎨 Enhanced UI:** Beautiful colored output with progress bars and structured formatting for better user experience.
 - **🔌 Pipeline Support:** Full stdin/stdout support for integration in automated workflows.
+- **📦 Integrity Validation:** Built-in ZIP integrity checking with CRC verification.
+- **🔧 Cross-platform:** Works seamlessly across Linux, macOS, and Windows.
+- **⚡ Parallel Processing:** Leverages `rayon` for optimized performance on multi-core systems.
+- **🔐 Security First:** Built with secure-by-default cryptography using the `ring` crate for cryptographic operations.
+- **📊 Progress Tracking:** Visual progress bars for long-running operations with detailed ETA estimation.
+- **🔄 Reproducible Builds:** Deterministic signing ensuring identical outputs for identical inputs.
 
 ## 📦 Installation
 
@@ -96,12 +102,23 @@ Signing Report:
 # Verify signature integrity
 zipsignerust verify signed-archive.zip
 
-# Verify with verbose output (shows progress indicators)
+# Verify with verbose output (shows detailed validation)
 zipsignerust -v verify signed-archive.zip
 
 # Verify against specific certificate
 zipsignerust verify signed-archive.zip --public-key my-cert.pem
 ```
+
+### Verification Capabilities
+
+ZipSignerust performs comprehensive verification including:
+
+- **Signature Validity:** Validates RSA signature against the certificate
+- **Manifest Integrity:** Ensures manifest hashes match actual files
+- **Entry Consistency:** Verifies all files have corresponding entries
+- **Digest Verification:** Checks SHA-1 digests for each file
+- **Structure Validation:** Ensures proper JAR signing format
+- **Integrity Check:** Performs CRC verification on all entries
 
 ### Pipeline Support
 
@@ -124,6 +141,7 @@ ZipSignerust supports Unix-style pipelines for seamless integration in automated
 | `-p`, `--public-key`  | Path to custom public key/certificate (PEM)            |
 | `-v`, `--verbose`     | Enable verbose logging with progress indicators        |
 | `-q`, `--quiet`       | Suppress all output except errors                      |
+| `-V`, `--version`     | Print version information                              |
 
 ## 🎨 Enhanced UI Features
 
@@ -137,10 +155,13 @@ ZipSignerust features a modern, colorful terminal interface with:
 
 ## 🧩 How It Works
 
-1.  **Manifest Generation:** Creates `META-INF/MANIFEST.MF` with SHA-1 digests of all files.
-2.  **Signature File:** Creates `META-INF/CERT.SF` containing digests of the manifest.
-3.  **RSA Signature:** Creates `META-INF/CERT.RSA` block containing the signature of the SF file.
-4.  **Nested Processing:** If a nested archive is found, it extracts, signs, and re-embeds it before signing the parent.
+1.  **Digest Computation:** Computes SHA-1 digests for all files in the archive, excluding signature files.
+2.  **Manifest Generation:** Creates `META-INF/MANIFEST.MF` with file paths and their SHA-1 digests.
+3.  **Signature File:** Creates `META-INF/CERT.SF` containing digests of the manifest entries.
+4.  **RSA Signature:** Creates `META-INF/CERT.RSA` with the RSA signature of the SF file.
+5.  **Nested Processing:** Recursively processes nested ZIP files within the archive, ensuring they're signed before the parent archive.
+6.  **Integrity Validation:** Performs CRC checks on all entries to ensure file integrity.
+7.  **Timestamp Setting:** Applies consistent timestamps for reproducible builds.
 
 ## 📄 License
 
