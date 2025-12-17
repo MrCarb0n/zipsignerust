@@ -41,6 +41,10 @@ pub struct Config {
     pub is_stdout: bool,
     /// Whether to suppress non-error output
     pub quiet: bool,
+    /// Enable verbose logging
+    pub verbose: bool,
+    /// Verbosity level (0 = off, 1 = verbose, 2 = very verbose, 3+ = debug)
+    pub verbosity_level: u8,
     /// Temporary file for stdin input handling
     pub _input_temp_file: Option<NamedTempFile>,
 }
@@ -50,15 +54,22 @@ impl Config {
     ///
     /// # Arguments
     /// * `matches` - The clap argument matches structure
+    /// * `ui` - User interface for verbose output
     ///
     /// # Returns
     /// Configuration object or an error
-    pub fn from_matches(matches: &ArgMatches) -> Result<Self, SignerError> {
+    pub fn from_matches(matches: &ArgMatches, ui: &crate::ui::Ui) -> Result<Self, SignerError> {
         let quiet = matches.get_flag("quiet");
+        let verbosity_level = matches.get_count("verbose") as u8;
+        let verbose = verbosity_level > 0;
 
         match matches.subcommand() {
-            Some(("sign", sub_matches)) => Self::parse_sign(sub_matches, quiet),
-            Some(("verify", sub_matches)) => Self::parse_verify(sub_matches, quiet),
+            Some(("sign", sub_matches)) => {
+                Self::parse_sign(sub_matches, quiet, verbose, verbosity_level, ui)
+            }
+            Some(("verify", sub_matches)) => {
+                Self::parse_verify(sub_matches, quiet, verbose, verbosity_level, ui)
+            }
             _ => Err(SignerError::Config(
                 "No subcommand provided. Use 'sign' or 'verify'.".into(),
             )),
@@ -70,10 +81,19 @@ impl Config {
     /// # Arguments
     /// * `matches` - The clap subcommand matches for signing
     /// * `quiet` - Whether to suppress non-error output
+    /// * `verbose` - Whether verbose mode is enabled
+    /// * `verbosity_level` - The verbosity level (0-3+)
+    /// * `ui` - User interface for verbose output
     ///
     /// # Returns
     /// Configuration object for signing mode or an error
-    fn parse_sign(matches: &ArgMatches, quiet: bool) -> Result<Self, SignerError> {
+    fn parse_sign(
+        matches: &ArgMatches,
+        quiet: bool,
+        verbose: bool,
+        verbosity_level: u8,
+        ui: &crate::ui::Ui,
+    ) -> Result<Self, SignerError> {
         let input_str = matches
             .get_one::<String>("input")
             .ok_or_else(|| SignerError::Config("No input file specified".into()))?;
@@ -82,9 +102,23 @@ impl Config {
             let mut temp = NamedTempFile::new().map_err(|e| {
                 SignerError::Config(format!("Failed to create temp file for stdin: {}", e))
             })?;
+            ui.verbose(&format!(
+                "Created temporary file for stdin input: {:?}",
+                temp.path()
+            ));
+            if verbose {
+                ui.info(&format!("Temp input: {:?}", temp.path()));
+            }
             let mut stdin = io::stdin();
             io::copy(&mut stdin, &mut temp)
                 .map_err(|e| SignerError::Config(format!("Failed to read stdin: {}", e)))?;
+            ui.verbose(&format!(
+                "Successfully copied stdin to temporary file: {:?}",
+                temp.path()
+            ));
+            if verbose {
+                ui.info("Read input from stdin");
+            }
             (temp.path().to_path_buf(), Some(temp))
         } else {
             let path = PathBuf::from(input_str);
@@ -102,6 +136,10 @@ impl Config {
                     e
                 ))
             })?;
+            ui.verbose(&format!("Using input file: {}", path.display()));
+            if verbose {
+                ui.info(&format!("Input: {}", path.display()));
+            }
             (path, None)
         };
 
@@ -120,7 +158,12 @@ impl Config {
                 is_stdout = true;
                 PathBuf::from("stdout")
             } else {
-                PathBuf::from(out)
+                let path = PathBuf::from(out);
+                ui.verbose(&format!("Using output file: {}", path.display()));
+                if verbose {
+                    ui.info(&format!("Output: {}", path.display()));
+                }
+                path
             }
         } else if input_temp_file.is_some() {
             is_stdout = true;
@@ -135,7 +178,12 @@ impl Config {
                         input_path.display()
                     ))
                 })?;
-            input_path.with_file_name(format!("{}_signed.zip", stem))
+            let output = input_path.with_file_name(format!("{}_signed.zip", stem));
+            ui.verbose(&format!("Using default output file: {}", output.display()));
+            if verbose {
+                ui.info(&format!("Output: {}", output.display()));
+            }
+            output
         };
 
         // Validate key paths exist if provided
@@ -147,8 +195,16 @@ impl Config {
                     key_path.display()
                 )));
             }
+            ui.verbose(&format!("Using private key: {}", key_path.display()));
+            if verbose {
+                ui.info(&format!("Key: {}", key_path.display()));
+            }
             Some(key_path)
         } else {
+            ui.verbose("Using default development private key");
+            if verbose {
+                ui.info("Using default key");
+            }
             None
         };
 
@@ -160,8 +216,16 @@ impl Config {
                     cert_path.display()
                 )));
             }
+            ui.verbose(&format!("Using certificate: {}", cert_path.display()));
+            if verbose {
+                ui.info(&format!("Cert: {}", cert_path.display()));
+            }
             Some(cert_path)
         } else {
+            ui.verbose("Using default development certificate");
+            if verbose {
+                ui.info("Using default cert");
+            }
             None
         };
 
@@ -176,6 +240,8 @@ impl Config {
             overwrite,
             is_stdout,
             quiet,
+            verbose,
+            verbosity_level,
             _input_temp_file: input_temp_file,
         })
     }
@@ -185,10 +251,19 @@ impl Config {
     /// # Arguments
     /// * `matches` - The clap subcommand matches for verification
     /// * `quiet` - Whether to suppress non-error output
+    /// * `verbose` - Whether verbose mode is enabled
+    /// * `verbosity_level` - The verbosity level (0-3+)
+    /// * `ui` - User interface for verbose output
     ///
     /// # Returns
     /// Configuration object for verification mode or an error
-    fn parse_verify(matches: &ArgMatches, quiet: bool) -> Result<Self, SignerError> {
+    fn parse_verify(
+        matches: &ArgMatches,
+        quiet: bool,
+        verbose: bool,
+        verbosity_level: u8,
+        ui: &crate::ui::Ui,
+    ) -> Result<Self, SignerError> {
         let input_path = PathBuf::from(matches.get_one::<String>("input").ok_or_else(|| {
             SignerError::Config("No input file specified for verification".into())
         })?);
@@ -209,6 +284,14 @@ impl Config {
             ))
         })?;
 
+        ui.verbose(&format!(
+            "Using input file for verification: {}",
+            input_path.display()
+        ));
+        if verbose {
+            ui.info(&format!("Input: {}", input_path.display()));
+        }
+
         // For verification, output_path is irrelevant, but we keep it valid to satisfy the struct
         let output_path = input_path.clone();
 
@@ -221,8 +304,20 @@ impl Config {
                     cert_path.display()
                 )));
             }
-            Some(cert_path.to_path_buf())
+            let path = PathBuf::from(cert_str);
+            ui.verbose(&format!(
+                "Using certificate for verification: {}",
+                path.display()
+            ));
+            if verbose {
+                ui.info(&format!("Cert: {}", path.display()));
+            }
+            Some(path)
         } else {
+            ui.verbose("Using default development certificate for verification");
+            if verbose {
+                ui.info("Using default cert");
+            }
             None
         };
 
@@ -238,6 +333,8 @@ impl Config {
             overwrite: false,
             is_stdout: false,
             quiet,
+            verbose,
+            verbosity_level,
             _input_temp_file: None,
         })
     }

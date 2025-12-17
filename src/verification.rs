@@ -18,13 +18,26 @@ pub struct ArtifactVerifier;
 
 impl ArtifactVerifier {
     /// Check if an archive's signature is valid
-    pub fn verify(path: &std::path::Path, keys: &KeyChain) -> Result<bool, SignerError> {
+    pub fn verify(
+        path: &std::path::Path,
+        keys: &KeyChain,
+        ui: &crate::ui::Ui,
+    ) -> Result<bool, SignerError> {
+        ui.verbose(&format!(
+            "Starting verification for archive: {}",
+            path.display()
+        ));
+
         let public_key = keys.public_key.as_ref().ok_or(SignerError::Config(
             "Public Key Missing for verification".into(),
         ))?;
+
+        ui.verbose("Loading signature verification key");
         let mut archive = ZipArchive::new(File::open(path)?)?;
+        ui.verbose(&format!("Opened archive with {} entries", archive.len()));
 
         let mut signature_bytes = Vec::new();
+        ui.verbose(&format!("Reading RSA signature from: {}", CERT_RSA_NAME));
         archive
             .by_name(CERT_RSA_NAME)
             .map_err(|_| {
@@ -34,8 +47,13 @@ impl ArtifactVerifier {
                 ))
             })?
             .read_to_end(&mut signature_bytes)?;
+        ui.verbose(&format!(
+            "Read RSA signature ({} bytes)",
+            signature_bytes.len()
+        ));
 
         let mut sf_file_bytes = Vec::new();
+        ui.verbose(&format!("Reading signature file from: {}", CERT_SF_NAME));
         archive
             .by_name(CERT_SF_NAME)
             .map_err(|_| {
@@ -45,12 +63,19 @@ impl ArtifactVerifier {
                 ))
             })?
             .read_to_end(&mut sf_file_bytes)?;
+        ui.verbose(&format!(
+            "Read signature file ({} bytes)",
+            sf_file_bytes.len()
+        ));
 
+        ui.verbose("Verifying RSA signature against signature file...");
         if let Err(e) = public_key.verify(&sf_file_bytes, &signature_bytes) {
+            ui.verbose(&format!("RSA signature verification failed: {}", e));
             return Err(SignerError::Validation(
                 format!("Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.", e)
             ));
         }
+        ui.verbose("RSA signature verification passed");
 
         let mut manifest_bytes = Vec::new();
         archive

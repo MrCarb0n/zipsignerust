@@ -98,8 +98,8 @@ pub fn run() -> Result<(), SignerError> {
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
-                .action(ArgAction::SetTrue)
-                .help("Enable verbose logging"),
+                .action(ArgAction::Count)
+                .help("Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)"),
         )
         .arg(
             Arg::new("quiet")
@@ -118,15 +118,15 @@ pub fn run() -> Result<(), SignerError> {
         .get_matches();
 
     if matches.get_flag("version_custom") {
-        let mut ui = Ui::new(false, false, true);
+        let mut ui = Ui::new(false, false, false, false, true);
         ui.enable_colors_if_supported();
         ui.print_version_info();
         return Ok(());
     }
 
-    let verbose = matches.get_flag("verbose");
+    let verbosity_level = matches.get_count("verbose") as u8;
     let quiet = matches.get_flag("quiet");
-    let mut ui = Ui::new(verbose, quiet, true);
+    let mut ui = Ui::from_verbosity_level(verbosity_level, quiet, true);
 
     // Enable colors if supported on the platform
     ui.enable_colors_if_supported();
@@ -141,18 +141,30 @@ pub fn run() -> Result<(), SignerError> {
 }
 
 fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
-    let mut config = Config::from_matches(matches)?;
+    let mut config = Config::from_matches(matches, ui)?;
 
     let output_temp_file = if config.is_stdout {
-        Some(NamedTempFile::new().map_err(|e| {
+        let temp_file = NamedTempFile::new().map_err(|e| {
             SignerError::Config(format!("Failed to create temp file for stdout: {}", e))
-        })?)
+        })?;
+        ui.verbose(&format!(
+            "Created temporary output file: {:?}",
+            temp_file.path()
+        ));
+        if config.verbose {
+            ui.info(&format!(
+                "Using temporary output file: {:?}",
+                temp_file.path()
+            ));
+        }
+        Some(temp_file)
     } else {
         None
     };
 
     if let Some(ref temp) = output_temp_file {
         config.output_path = temp.path().to_path_buf();
+        ui.record_temp_file(temp.path());
     }
 
     match config.mode {
@@ -165,12 +177,28 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 config.input_path.display()
             ));
 
-            if ArtifactVerifier::verify(&config.input_path, &key_chain)? {
+            if let Some(ref cert_path) = config.cert_path {
+                ui.verbose(&format!(
+                    "Using custom certificate for verification: {}",
+                    cert_path.display()
+                ));
+            } else {
+                ui.verbose("Using default development certificate for verification");
+            }
+
+            ui.verbose(&format!(
+                "Starting verification process for: {}",
+                config.input_path.display()
+            ));
+            if ArtifactVerifier::verify(&config.input_path, &key_chain, ui)? {
                 ui.success("Signature valid. Artifact authentic.");
+                ui.verbose("Verification completed successfully");
                 // Add a small vertical space after verification result for better visual separation
                 if ui.verbose {
                     eprintln!();
                 }
+            } else {
+                ui.verbose("Verification completed - signature is invalid");
             }
         }
         config::Mode::Sign { inplace } => {
@@ -178,16 +206,36 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             let key_chain =
                 KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
+            if let Some(ref key_path) = config.key_path {
+                ui.verbose(&format!("Using custom private key: {}", key_path.display()));
+            } else {
+                ui.verbose("Using default development private key");
+            }
+
+            if let Some(ref cert_path) = config.cert_path {
+                ui.verbose(&format!(
+                    "Using custom certificate: {}",
+                    cert_path.display()
+                ));
+            } else {
+                ui.verbose("Using default development certificate");
+            }
+
             ui.print_mode_header("SIGNING MODE");
+            ui.verbose(&format!("In-place mode: {}", inplace));
 
             if config._input_temp_file.is_some() {
                 ui.info("Source: <stdin pipe>");
+                ui.verbose(&format!("Temporary input file: {:?}", config.input_path));
             } else {
                 ui.info(&format!("Source: {}", config.input_path.display()));
             }
 
             if config.is_stdout {
                 ui.info("Target: <stdout pipe>");
+                if let Some(ref temp_file) = output_temp_file {
+                    ui.verbose(&format!("Temporary output file: {:?}", temp_file.path()));
+                }
             } else {
                 ui.info(&format!("Target: {}", config.output_path.display()));
             }
@@ -200,14 +248,31 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             }
 
             ui.info("Computing digests...");
+            ui.verbose(&format!(
+                "Processing input archive: {}",
+                config.input_path.display()
+            ));
             let nested = processor::ArtifactProcessor::compute_digests_prepare_nested(
                 &config.input_path,
                 &key_chain,
                 ui,
             )?;
+            ui.verbose(&format!(
+                "Successfully computed digests for {} files",
+                nested.digests.len()
+            ));
+            ui.verbose(&format!(
+                "Found {} nested archives for processing",
+                nested.nested_files.len()
+            ));
 
             let working_input = if inplace {
                 let backup = config.input_path.with_extension("bak");
+                ui.verbose(&format!(
+                    "Creating backup: {} -> {}",
+                    config.input_path.display(),
+                    backup.display()
+                ));
                 std::fs::rename(&config.input_path, &backup)?;
                 ui.warn(&format!("Backup created: {}", backup.display()));
                 backup
@@ -216,6 +281,19 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             };
 
             ui.info("Signing artifact...");
+            ui.verbose(&format!(
+                "Writing signed output to: {}",
+                config.output_path.display()
+            ));
+            ui.verbose(&format!(
+                "Using {} digests for signing",
+                nested.digests.len()
+            ));
+            ui.verbose(&format!(
+                "Processing {} nested files",
+                nested.nested_files.len()
+            ));
+
             match processor::ArtifactProcessor::write_signed_zip_with_sources(
                 &working_input,
                 &config.output_path,
@@ -225,12 +303,23 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 ui,
             ) {
                 Ok(_) => {
+                    ui.verbose(&format!(
+                        "Successfully wrote signed archive to: {}",
+                        config.output_path.display()
+                    ));
+
                     if inplace {
+                        ui.verbose(&format!(
+                            "Removing temporary working file: {:?}",
+                            working_input
+                        ));
                         std::fs::remove_file(&working_input)?;
                         ui.success("In-place signing complete.");
 
                         // Add visual separation before the signing report
-                        eprintln!();
+                        if ui.verbose {
+                            eprintln!();
+                        }
 
                         let key_type = if config.key_path.is_some() {
                             "Custom (PEM/PK8)"
@@ -248,9 +337,11 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                             ],
                         );
                     } else if config.is_stdout {
+                        ui.verbose("Copying final output to stdout...");
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
                         io::copy(&mut file, &mut stdout)?;
+                        ui.verbose("Successfully wrote to stdout");
                     } else {
                         ui.success("Archive successfully signed.");
 
@@ -261,7 +352,9 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                         };
 
                         // Add visual separation before the signing report
-                        eprintln!();
+                        if ui.verbose {
+                            eprintln!();
+                        }
 
                         ui.print_summary(
                             "Signing Report",
@@ -299,5 +392,9 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             }
         }
     }
+
+    // Print temporary files that were created if in debug mode
+    ui.print_temp_files();
+
     Ok(())
 }
