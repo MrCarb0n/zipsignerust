@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
     config::{self, Config},
@@ -13,6 +23,7 @@ use crate::{
     *,
 };
 use clap::{Arg, ArgAction, Command};
+use colored::Colorize;
 use std::io;
 use tempfile::NamedTempFile;
 
@@ -25,6 +36,28 @@ pub fn run() -> Result<(), SignerError> {
                 .map(|s| s.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| APP_BIN_NAME.to_string());
+
+    // Check if help is requested before building the full command
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 || (args.len() >= 2 && (args[1] == "-h" || args[1] == "--help")) {
+        print_formatted_help()?;
+        return Ok(());
+    }
+
+    // Check if a subcommand help is requested
+    if args.len() >= 3 && (args[2] == "-h" || args[2] == "--help") {
+        match args[1].as_str() {
+            "sign" => {
+                print_sign_help()?;
+                return Ok(());
+            }
+            "verify" => {
+                print_verify_help()?;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
 
     let matches = Command::new(APP_NAME)
         .bin_name(binary_name)
@@ -147,7 +180,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
         let temp_file = NamedTempFile::new().map_err(|e| {
             SignerError::Config(format!("Failed to create temp file for stdout: {}", e))
         })?;
-        ui.verbose(&format!(
+        ui.debug(&format!(
             "Created temporary output file: {:?}",
             temp_file.path()
         ));
@@ -178,27 +211,27 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             ));
 
             if let Some(ref cert_path) = config.cert_path {
-                ui.verbose(&format!(
+                ui.info(&format!(
                     "Using custom certificate for verification: {}",
                     cert_path.display()
                 ));
             } else {
-                ui.verbose("Using default development certificate for verification");
+                ui.info("Using default development certificate for verification");
             }
 
-            ui.verbose(&format!(
+            ui.info(&format!(
                 "Starting verification process for: {}",
                 config.input_path.display()
             ));
             if ArtifactVerifier::verify(&config.input_path, &key_chain, ui)? {
                 ui.success("Signature valid. Artifact authentic.");
-                ui.verbose("Verification completed successfully");
+                ui.info("Verification completed successfully");
                 // Add a small vertical space after verification result for better visual separation
                 if ui.verbose {
                     eprintln!();
                 }
             } else {
-                ui.verbose("Verification completed - signature is invalid");
+                ui.info("Verification completed - signature is invalid");
             }
         }
         config::Mode::Sign { inplace } => {
@@ -207,26 +240,26 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
             if let Some(ref key_path) = config.key_path {
-                ui.verbose(&format!("Using custom private key: {}", key_path.display()));
+                ui.debug(&format!("Using custom private key: {}", key_path.display()));
             } else {
-                ui.verbose("Using default development private key");
+                ui.debug("Using default development private key");
             }
 
             if let Some(ref cert_path) = config.cert_path {
-                ui.verbose(&format!(
+                ui.debug(&format!(
                     "Using custom certificate: {}",
                     cert_path.display()
                 ));
             } else {
-                ui.verbose("Using default development certificate");
+                ui.debug("Using default development certificate");
             }
 
             ui.print_mode_header("SIGNING MODE");
-            ui.verbose(&format!("In-place mode: {}", inplace));
+            ui.debug(&format!("In-place mode: {}", inplace));
 
             if config._input_temp_file.is_some() {
                 ui.info("Source: <stdin pipe>");
-                ui.verbose(&format!("Temporary input file: {:?}", config.input_path));
+                ui.debug(&format!("Temporary input file: {:?}", config.input_path));
             } else {
                 ui.info(&format!("Source: {}", config.input_path.display()));
             }
@@ -234,7 +267,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             if config.is_stdout {
                 ui.info("Target: <stdout pipe>");
                 if let Some(ref temp_file) = output_temp_file {
-                    ui.verbose(&format!("Temporary output file: {:?}", temp_file.path()));
+                    ui.debug(&format!("Temporary output file: {:?}", temp_file.path()));
                 }
             } else {
                 ui.info(&format!("Target: {}", config.output_path.display()));
@@ -248,7 +281,7 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             }
 
             ui.info("Computing digests...");
-            ui.verbose(&format!(
+            ui.info(&format!(
                 "Processing input archive: {}",
                 config.input_path.display()
             ));
@@ -257,18 +290,18 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 &key_chain,
                 ui,
             )?;
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Successfully computed digests for {} files",
                 nested.digests.len()
             ));
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Found {} nested archives for processing",
                 nested.nested_files.len()
             ));
 
             let working_input = if inplace {
                 let backup = config.input_path.with_extension("bak");
-                ui.verbose(&format!(
+                ui.debug(&format!(
                     "Creating backup: {} -> {}",
                     config.input_path.display(),
                     backup.display()
@@ -281,15 +314,15 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
             };
 
             ui.info("Signing artifact...");
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Writing signed output to: {}",
                 config.output_path.display()
             ));
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Using {} digests for signing",
                 nested.digests.len()
             ));
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Processing {} nested files",
                 nested.nested_files.len()
             ));
@@ -303,13 +336,13 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                 ui,
             ) {
                 Ok(_) => {
-                    ui.verbose(&format!(
+                    ui.debug(&format!(
                         "Successfully wrote signed archive to: {}",
                         config.output_path.display()
                     ));
 
                     if inplace {
-                        ui.verbose(&format!(
+                        ui.info(&format!(
                             "Removing temporary working file: {:?}",
                             working_input
                         ));
@@ -337,11 +370,11 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
                             ],
                         );
                     } else if config.is_stdout {
-                        ui.verbose("Copying final output to stdout...");
+                        ui.debug("Copying final output to stdout...");
                         let mut file = std::fs::File::open(&config.output_path)?;
                         let mut stdout = io::stdout();
                         io::copy(&mut file, &mut stdout)?;
-                        ui.verbose("Successfully wrote to stdout");
+                        ui.debug("Successfully wrote to stdout");
                     } else {
                         ui.success("Archive successfully signed.");
 
@@ -398,3 +431,130 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
 
     Ok(())
 }
+
+/// Print help with UI formatting for consistent indentation
+fn print_formatted_help() -> Result<(), SignerError> {
+    let mut ui = Ui::default();
+    ui.enable_colors_if_supported();
+
+    // Print the application description with UI formatting
+    ui.info("High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.");
+
+    // Print usage
+    eprintln!();
+    if ui.supports_color() {
+        eprintln!("{}", format!("{}", "Usage:".bold().blue()).blue());
+        let usage = format!("  {} [OPTIONS] [COMMAND]", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()).as_str().cyan());
+        eprintln!("{}", usage);
+    } else {
+        eprintln!("{}", "Usage:".blue());
+        let usage = format!("  {} [OPTIONS] [COMMAND]", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()));
+        eprintln!("{}", usage);
+    }
+
+    eprintln!();
+
+    // Print commands section using standardized UI
+    ui.print_help_section("Commands", &[
+        ("sign", "Sign a ZIP archive"),
+        ("verify", "Verify the signature of an archive"),
+        ("help", "Print this message or the help of the given subcommand(s)"),
+    ]);
+
+    // Print options section using standardized UI
+    ui.print_help_section("Options", &[
+        ("-v, --verbose", "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)"),
+        ("-q, --quiet", "Suppress all output except errors"),
+        ("-V, --version", "Print version information"),
+        ("-h, --help", "Print help"),
+    ]);
+
+    Ok(())
+}
+
+/// Print sign subcommand help with UI formatting for consistency
+fn print_sign_help() -> Result<(), SignerError> {
+    let mut ui = Ui::default();
+    ui.enable_colors_if_supported();
+
+    // Print usage for sign command
+    eprintln!();
+    if ui.supports_color() {
+        eprintln!("{}", format!("{}", "Usage:".bold().blue()).blue());
+        let usage = format!("  {} sign [OPTIONS] <INPUT> [OUTPUT]", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()).as_str().cyan());
+        eprintln!("{}", usage);
+    } else {
+        eprintln!("{}", "Usage:".blue());
+        let usage = format!("  {} sign [OPTIONS] <INPUT> [OUTPUT]", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()));
+        eprintln!("{}", usage);
+    }
+
+    eprintln!();
+
+    // Print description
+    ui.info("Sign a ZIP archive");
+
+    eprintln!();
+
+    // Print options section using standardized UI
+    ui.print_help_section("Arguments", &[
+        ("<INPUT>", "Path to the input ZIP file (- for stdin)"),
+        ("[OUTPUT]", "Path to save the signed ZIP (- for stdout, optional)"),
+    ]);
+
+    eprintln!();
+
+    ui.print_help_section("Options", &[
+        ("-k KEY", "Custom private key (PEM/PK8)"),
+        ("-p CERT", "Custom public key/cert (PEM/X509)"),
+        ("-f", "Force overwrite if output exists"),
+        ("-i", "Sign input file directly (creates backup)"),
+        ("-v", "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)"),
+        ("-q", "Suppress all output except errors"),
+        ("-h", "Print help"),
+    ]);
+
+    Ok(())
+}
+
+/// Print verify subcommand help with UI formatting for consistency
+fn print_verify_help() -> Result<(), SignerError> {
+    let mut ui = Ui::default();
+    ui.enable_colors_if_supported();
+
+    // Print usage for verify command
+    eprintln!();
+    if ui.supports_color() {
+        eprintln!("{}", format!("{}", "Usage:".bold().blue()).blue());
+        let usage = format!("  {} verify [OPTIONS] <INPUT>", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()).as_str().cyan());
+        eprintln!("{}", usage);
+    } else {
+        eprintln!("{}", "Usage:".blue());
+        let usage = format!("  {} verify [OPTIONS] <INPUT>", std::env::args().next().unwrap_or_else(|| "zipsignerust".to_string()));
+        eprintln!("{}", usage);
+    }
+
+    eprintln!();
+
+    // Print description
+    ui.info("Verify the signature of an archive");
+
+    eprintln!();
+
+    // Print options section using standardized UI
+    ui.print_help_section("Arguments", &[
+        ("<INPUT>", "Path to the archive to verify"),
+    ]);
+
+    eprintln!();
+
+    ui.print_help_section("Options", &[
+        ("-p CERT", "Custom public key/cert (PEM) to verify against"),
+        ("-v", "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)"),
+        ("-q", "Suppress all output except errors"),
+        ("-h", "Print help"),
+    ]);
+
+    Ok(())
+}
+

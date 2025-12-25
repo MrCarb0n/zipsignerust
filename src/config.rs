@@ -1,11 +1,20 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 //! Configuration parsing and validation for the ZipSigner CLI.
-//! Handles command line arguments and sets up application configuration.
 
 use crate::error::SignerError;
 use clap::ArgMatches;
@@ -60,7 +69,7 @@ impl Config {
     /// Configuration object or an error
     pub fn from_matches(matches: &ArgMatches, ui: &crate::ui::Ui) -> Result<Self, SignerError> {
         let quiet = matches.get_flag("quiet");
-        let verbosity_level = matches.get_count("verbose") as u8;
+        let verbosity_level = matches.get_count("verbose");
         let verbose = verbosity_level > 0;
 
         match matches.subcommand() {
@@ -102,7 +111,7 @@ impl Config {
             let mut temp = NamedTempFile::new().map_err(|e| {
                 SignerError::Config(format!("Failed to create temp file for stdin: {}", e))
             })?;
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Created temporary file for stdin input: {:?}",
                 temp.path()
             ));
@@ -112,7 +121,7 @@ impl Config {
             let mut stdin = io::stdin();
             io::copy(&mut stdin, &mut temp)
                 .map_err(|e| SignerError::Config(format!("Failed to read stdin: {}", e)))?;
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Successfully copied stdin to temporary file: {:?}",
                 temp.path()
             ));
@@ -136,7 +145,7 @@ impl Config {
                     e
                 ))
             })?;
-            ui.verbose(&format!("Using input file: {}", path.display()));
+            ui.debug(&format!("Using input file: {}", path.display()));
             if verbose {
                 ui.info(&format!("Input: {}", path.display()));
             }
@@ -159,7 +168,7 @@ impl Config {
                 PathBuf::from("stdout")
             } else {
                 let path = PathBuf::from(out);
-                ui.verbose(&format!("Using output file: {}", path.display()));
+                ui.debug(&format!("Using output file: {}", path.display()));
                 if verbose {
                     ui.info(&format!("Output: {}", path.display()));
                 }
@@ -179,7 +188,7 @@ impl Config {
                     ))
                 })?;
             let output = input_path.with_file_name(format!("{}_signed.zip", stem));
-            ui.verbose(&format!("Using default output file: {}", output.display()));
+            ui.debug(&format!("Using default output file: {}", output.display()));
             if verbose {
                 ui.info(&format!("Output: {}", output.display()));
             }
@@ -195,13 +204,13 @@ impl Config {
                     key_path.display()
                 )));
             }
-            ui.verbose(&format!("Using private key: {}", key_path.display()));
+            ui.debug(&format!("Using private key: {}", key_path.display()));
             if verbose {
                 ui.info(&format!("Key: {}", key_path.display()));
             }
             Some(key_path)
         } else {
-            ui.verbose("Using default development private key");
+            ui.debug("Using default development private key");
             if verbose {
                 ui.info("Using default key");
             }
@@ -216,13 +225,13 @@ impl Config {
                     cert_path.display()
                 )));
             }
-            ui.verbose(&format!("Using certificate: {}", cert_path.display()));
+            ui.debug(&format!("Using certificate: {}", cert_path.display()));
             if verbose {
                 ui.info(&format!("Cert: {}", cert_path.display()));
             }
             Some(cert_path)
         } else {
-            ui.verbose("Using default development certificate");
+            ui.debug("Using default development certificate");
             if verbose {
                 ui.info("Using default cert");
             }
@@ -284,7 +293,7 @@ impl Config {
             ))
         })?;
 
-        ui.verbose(&format!(
+        ui.debug(&format!(
             "Using input file for verification: {}",
             input_path.display()
         ));
@@ -305,7 +314,7 @@ impl Config {
                 )));
             }
             let path = PathBuf::from(cert_str);
-            ui.verbose(&format!(
+            ui.debug(&format!(
                 "Using certificate for verification: {}",
                 path.display()
             ));
@@ -314,7 +323,7 @@ impl Config {
             }
             Some(path)
         } else {
-            ui.verbose("Using default development certificate for verification");
+            ui.debug("Using default development certificate for verification");
             if verbose {
                 ui.info("Using default cert");
             }

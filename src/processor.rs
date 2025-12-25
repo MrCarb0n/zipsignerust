@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
     crypto::CryptoEngine, error::SignerError, keys::KeyChain, ui::Ui, APP_NAME, BUFFER_SIZE,
@@ -39,19 +49,19 @@ impl ArtifactProcessor {
     ) -> Result<BTreeMap<String, String>, SignerError> {
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let len = archive.len();
-        ui.verbose(&format!("Digests: {} entries in {}", len, path.display()));
+        ui.debug(&format!("Digests: {} entries in {}", len, path.display()));
 
         let mut stats = (0u64, 0u64); // (total_size, non_sig_count)
         for i in 0..len {
-            if let Some(f) = archive.by_index(i).ok() {
+            if let Ok(f) = archive.by_index(i) {
                 let name = f.name();
-                if !name.ends_with('/') && !Self::is_sig_file(&name) {
+                if !name.ends_with('/') && !Self::is_sig_file(name) {
                     stats.0 += f.size();
                     stats.1 += 1;
                 }
             }
         }
-        ui.verbose(&format!("Process: {} files ({} bytes)", stats.1, stats.0));
+        ui.debug(&format!("Process: {} files ({} bytes)", stats.1, stats.0));
 
         if ui.verbose && stats.1 > 0 {
             if stats.0 > 10 * 1024 * 1024 {
@@ -59,7 +69,7 @@ impl ArtifactProcessor {
             } else if stats.1 > 10 {
                 ui.show_progress_bar(stats.1, "Manifest digests");
             } else {
-                ui.verbose("Skipping progress bar: <10 files");
+                ui.info("Skipping progress bar: <10 files");
             }
         }
 
@@ -69,7 +79,7 @@ impl ArtifactProcessor {
             let name = f.name().to_string();
 
             if !name.ends_with('/') && !Self::is_sig_file(&name) {
-                ui.very_verbose(&format!("SHA1: {} ({} bytes)", name, f.size()));
+                ui.debug(&format!("SHA1: {} ({} bytes)", name, f.size()));
                 let digest =
                     CryptoEngine::compute_stream_sha1_with_ui(&mut f, Some(ui), Some(&name))?;
                 digests.insert(name, digest);
@@ -79,7 +89,7 @@ impl ArtifactProcessor {
                 }
             }
         }
-        ui.verbose(&format!("Digests: {} files processed", digests.len()));
+        ui.debug(&format!("Digests: {} files processed", digests.len()));
         if ui.has_progress_bar() {
             ui.finish_progress();
         }
@@ -103,7 +113,7 @@ impl ArtifactProcessor {
             }
 
             if name.ends_with(".zip") {
-                ui.verbose(&format!("Nested: {}", name));
+                ui.debug(&format!("Nested: {}", name));
                 let tmpdir = tempdir()?;
                 ui.record_temp_file(tmpdir.path());
                 let (src, signed) = (
@@ -113,9 +123,9 @@ impl ArtifactProcessor {
                 ui.record_temp_file(&src);
                 ui.record_temp_file(&signed);
 
-                ui.verbose(&format!("Tmp: {:?}", tmpdir.path()));
+                ui.debug(&format!("Tmp: {:?}", tmpdir.path()));
                 ui.info(&format!("Dir: {:?}", tmpdir.path()));
-                ui.verbose(&format!("Extr: {:?}", src));
+                ui.debug(&format!("Extr: {:?}", src));
 
                 {
                     let mut out = OpenOptions::new()
@@ -124,26 +134,26 @@ impl ArtifactProcessor {
                         .truncate(true)
                         .open(&src)?;
                     std::io::copy(&mut f, &mut out)?;
-                    ui.verbose(&format!("Extr: {} -> {}", name, src.display()));
+                    ui.debug(&format!("Extr: {} -> {}", name, src.display()));
                 }
 
                 let nested_digests = Self::compute_manifest_digests(&src, ui)?;
-                ui.verbose(&format!("Nested: {} entries", nested_digests.len()));
+                ui.debug(&format!("Nested: {} entries", nested_digests.len()));
 
                 Self::write_signed_zip(&src, &signed, keys, &nested_digests, ui)?;
-                ui.verbose(&format!("Signed: {:?}", signed));
+                ui.debug(&format!("Signed: {:?}", signed));
 
                 let nested_bytes = fs::read(&signed)?;
                 let digest = CryptoEngine::compute_sha1(&nested_bytes);
                 digests.insert(name.clone(), digest.clone());
                 nested_files.insert(name.clone(), nested_bytes);
-                ui.verbose(&format!("Proc: {} -> SHA1: {}", name, &digest[..8]));
-                ui.verbose(&format!("Cleanup: {:?}", tmpdir.path()));
+                ui.debug(&format!("Proc: {} -> SHA1: {}", name, &digest[..8]));
+                ui.debug(&format!("Cleanup: {:?}", tmpdir.path()));
             } else {
                 let digest =
                     CryptoEngine::compute_stream_sha1_with_ui(&mut f, Some(ui), Some(&name))?;
                 digests.insert(name.clone(), digest.clone());
-                ui.very_verbose(&format!("Digest: {} -> SHA1: {}", name, &digest[..8]));
+                ui.debug(&format!("Digest: {} -> SHA1: {}", name, &digest[..8]));
             }
         }
         Ok(NestedDigests {
@@ -218,11 +228,11 @@ impl ArtifactProcessor {
                     ui.record_temp_file(&src);
                     ui.record_temp_file(&signed);
 
-                    ui.verbose(&format!("Tmp dir: {:?}", tmpdir.path()));
-                    if ui.verbose {
+                    ui.debug(&format!("Tmp dir: {:?}", tmpdir.path()));
+                    if ui.debug {
                         ui.info(&format!("Dir: {:?}", tmpdir.path()));
                     }
-                    ui.verbose(&format!("Extr: {:?}", src));
+                    ui.debug(&format!("Extr: {:?}", src));
 
                     let mut total_written = 0u64;
                     {
@@ -242,7 +252,7 @@ impl ArtifactProcessor {
                                 ui.update_progress(pos + total_written);
                             }
                         }
-                        ui.verbose(&format!(
+                        ui.debug(&format!(
                             "Extr: {} bytes to: {}",
                             total_written,
                             src.display()
@@ -250,14 +260,14 @@ impl ArtifactProcessor {
                     }
 
                     let nested_digests = Self::compute_manifest_digests(&src, ui)?;
-                    ui.verbose(&format!("Nested: {} entries", nested_digests.len()));
-                    ui.verbose(&format!("Sign: {} -> {}", src.display(), signed.display()));
+                    ui.debug(&format!("Nested: {} entries", nested_digests.len()));
+                    ui.debug(&format!("Sign: {} -> {}", src.display(), signed.display()));
                     Self::write_signed_zip(&src, &signed, keys, &nested_digests, ui)?;
-                    ui.verbose(&format!("Signed: {:?}", signed));
+                    ui.debug(&format!("Signed: {:?}", signed));
 
                     let ft = FileTime::from_system_time(std::time::SystemTime::now());
                     set_file_times(&signed, ft, ft)?;
-                    ui.verbose(&format!("Time: {:?}", signed));
+                    ui.debug(&format!("Time: {:?}", signed));
 
                     let mut nested_file = BufReader::new(File::open(&signed)?);
                     let mut total_read = 0u64;
@@ -272,8 +282,8 @@ impl ArtifactProcessor {
                             ui.update_progress(pos + total_read);
                         }
                     }
-                    ui.verbose(&format!("Embed: {} ({} bytes)", name, total_read));
-                    ui.verbose(&format!("Cleanup: {:?}", tmpdir.path()));
+                    ui.debug(&format!("Embed: {} ({} bytes)", name, total_read));
+                    ui.debug(&format!("Cleanup: {:?}", tmpdir.path()));
                     pos += total_read + f.size();
                 } else {
                     let mut total_read = 0u64;
@@ -288,7 +298,7 @@ impl ArtifactProcessor {
                             ui.update_progress(pos + total_read);
                         }
                     }
-                    ui.verbose(&format!("Copy: {} ({} bytes)", name, total_read));
+                    ui.debug(&format!("Copy: {} ({} bytes)", name, total_read));
                     pos += total_read;
                 }
 
@@ -299,23 +309,23 @@ impl ArtifactProcessor {
             Ok::<(), SignerError>(())
         })?;
 
-        if ui.very_verbose {
-            ui.very_verbose(&format!("Output: {}", output.display()));
+        if ui.debug {
+            ui.debug(&format!("Output: {}", output.display()));
         } else {
-            ui.verbose(&format!("Output: {}", output.display()));
+            ui.info(&format!("Output: {}", output.display()));
         }
 
         if ui.verbose && ui.has_progress_bar() {
             ui.finish_progress();
         }
         writer.finish()?;
-        ui.very_verbose("Finalized ZIP");
+        ui.debug("Finalized ZIP");
         let ft = FileTime::from_system_time(std::time::SystemTime::now());
         set_file_times(output, ft, ft)?;
-        ui.very_verbose(&format!("Time: {}", output.display()));
-        ui.very_verbose("Integrity check...");
+        ui.debug(&format!("Time: {}", output.display()));
+        ui.debug("Integrity check...");
         Self::verify_zip_integrity_with_ui(output, Some(ui))?;
-        ui.very_verbose("Integrity OK");
+        ui.debug("Integrity OK");
         Ok(())
     }
 
@@ -409,18 +419,18 @@ impl ArtifactProcessor {
             Ok::<(), SignerError>(())
         })?;
 
-        ui.verbose(&format!("Sources: {}", output.display()));
+        ui.debug(&format!("Sources: {}", output.display()));
         if ui.verbose && ui.has_progress_bar() {
             ui.finish_progress();
         }
         writer.finish()?;
-        ui.verbose("Finalized ZIP");
+        ui.debug("Finalized ZIP");
         let ft = FileTime::from_system_time(std::time::SystemTime::now());
         set_file_times(output, ft, ft)?;
-        ui.verbose(&format!("Time: {}", output.display()));
-        ui.verbose("Integrity check...");
+        ui.debug(&format!("Time: {}", output.display()));
+        ui.debug("Integrity check...");
         Self::verify_zip_integrity_with_ui(output, Some(ui))?;
-        ui.verbose("Integrity OK");
+        ui.debug("Integrity OK");
         Ok(())
     }
 
@@ -454,7 +464,11 @@ impl ArtifactProcessor {
 
     fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
         let line = if Self::is_non_wrapping_field(key) {
-            format!("{}: {}", key, value).into_bytes()
+            let line = format!("{}: {}", key, value).into_bytes();
+            let mut result = Vec::with_capacity(line.len() + 2);
+            result.extend_from_slice(&line);
+            result.extend_from_slice(b"\r\n");
+            result
         } else {
             let line = format!("{}: {}", key, value).into_bytes();
             let mut result = Vec::with_capacity(line.len() + 10);
@@ -538,7 +552,7 @@ impl ArtifactProcessor {
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let mut total_size = 0u64;
         for i in 0..archive.len() {
-            if let Some(f) = archive.by_index(i).ok() {
+            if let Ok(f) = archive.by_index(i) {
                 if !f.name().ends_with('/') {
                     total_size += f.size();
                 }

@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{error::SignerError, ui::Ui};
 use ::pem as pem_crate;
@@ -69,7 +79,7 @@ impl KeyChain {
             Ok(pem) => RsaKeyPair::from_pkcs8(pem.contents())
                 .map_err(|e| SignerError::Config(format!("Invalid PEM private key: {}", e)))?,
             Err(_) => {
-                ui.verbose("Input is not PEM, attempting to parse as binary PK8/DER...");
+                ui.debug("Input is not PEM, attempting to parse as binary PK8/DER...");
                 RsaKeyPair::from_pkcs8(&content).map_err(|e| {
                     SignerError::Config(format!("Invalid private key format: {}", e))
                 })?
@@ -91,7 +101,7 @@ impl KeyChain {
         let cert_der = match pem_crate::parse(&content) {
             Ok(pem) => pem.contents().to_vec(),
             Err(_) => {
-                ui.verbose("Input is not PEM, attempting to parse as binary X.509 DER...");
+                ui.debug("Input is not PEM, attempting to parse as binary X.509 DER...");
                 content
             }
         };
@@ -114,7 +124,9 @@ impl KeyChain {
             return *dt;
         }
         // Fallback only if absolutely no certificate date is found.
-        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0).unwrap()
+        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0).unwrap_or_else(|_| {
+            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+        })
     }
 
     #[cfg(unix)]
@@ -150,7 +162,10 @@ impl KeyChain {
 
         DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_else(|_| {
             ui.error("Failed to create DateTime from certificate. Fallback used.");
-            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
+            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap_or_else(|_| {
+                // If both fail, use a basic fallback that should always work
+                DateTime::default()
+            })
         })
     }
 }

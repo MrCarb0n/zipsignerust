@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{error::SignerError, keys::KeyChain};
 use simple_asn1::{ASN1Block, BigInt};
@@ -99,17 +109,20 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
         &mut signature_bytes,
     )?;
 
-    let si_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1))).unwrap();
+    let si_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1)))
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for version: {}", e)))?;
     let issuer_blocks = simple_asn1::from_der(issuer_der)
         .map_err(|e| SignerError::Config(format!("Issuer parse error: {}", e)))?;
     let iasn = ASN1Block::Sequence(
         0,
         vec![
-            issuer_blocks.into_iter().next().unwrap(),
+            issuer_blocks.into_iter().next()
+                .ok_or_else(|| SignerError::Config("No issuer block found in certificate".to_string()))?,
             ASN1Block::Integer(0, serial_bigint),
         ],
     );
-    let si_iasn = simple_asn1::to_der(&iasn).unwrap();
+    let si_iasn = simple_asn1::to_der(&iasn)
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for issuer: {}", e)))?;
     let si_da = simple_asn1::to_der(&ASN1Block::Sequence(
         0,
         vec![
@@ -117,13 +130,14 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
             ASN1Block::Null(0),
         ],
     ))
-    .unwrap();
+    .map_err(|e| SignerError::Config(format!("ASN1 encoding error for digest algorithm: {}", e)))?;
     let si_ea = simple_asn1::to_der(&ASN1Block::Sequence(
         0,
         vec![ASN1Block::ObjectIdentifier(0, oid_rsa), ASN1Block::Null(0)],
     ))
-    .unwrap();
-    let si_ed = simple_asn1::to_der(&ASN1Block::OctetString(0, signature_bytes)).unwrap();
+    .map_err(|e| SignerError::Config(format!("ASN1 encoding error for encryption algorithm: {}", e)))?;
+    let si_ed = simple_asn1::to_der(&ASN1Block::OctetString(0, signature_bytes))
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for signature: {}", e)))?;
 
     let mut si_content = Vec::new();
     si_content.extend(si_ver);
@@ -134,7 +148,8 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     si_content.extend(si_ed);
     let signer_info = wrap_tag(0x30, &si_content);
 
-    let sd_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1))).unwrap();
+    let sd_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1)))
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for signed data version: {}", e)))?;
     let da_set = ASN1Block::Set(
         0,
         vec![ASN1Block::Sequence(
@@ -145,9 +160,11 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
             ],
         )],
     );
-    let sd_da = simple_asn1::to_der(&da_set).unwrap();
+    let sd_da = simple_asn1::to_der(&da_set)
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for digest algorithm set: {}", e)))?;
     let eci = ASN1Block::Sequence(0, vec![ASN1Block::ObjectIdentifier(0, oid_data)]);
-    let sd_eci = simple_asn1::to_der(&eci).unwrap();
+    let sd_eci = simple_asn1::to_der(&eci)
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for content info: {}", e)))?;
     let sd_certs = wrap_tag(0xA0, cert_der);
     let sd_si = wrap_tag(0x31, &signer_info);
 
@@ -159,7 +176,8 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     sd_content.extend(sd_si);
     let signed_data = wrap_tag(0x30, &sd_content);
 
-    let ci_oid = simple_asn1::to_der(&ASN1Block::ObjectIdentifier(0, oid_signed_data)).unwrap();
+    let ci_oid = simple_asn1::to_der(&ASN1Block::ObjectIdentifier(0, oid_signed_data))
+        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for content identifier: {}", e)))?;
     let ci_content = wrap_tag(0xA0, &signed_data);
 
     let mut ci_final = Vec::new();

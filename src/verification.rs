@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
 use std::io::Read;
@@ -23,7 +33,7 @@ impl ArtifactVerifier {
         keys: &KeyChain,
         ui: &crate::ui::Ui,
     ) -> Result<bool, SignerError> {
-        ui.verbose(&format!(
+        ui.debug(&format!(
             "Starting verification for archive: {}",
             path.display()
         ));
@@ -32,12 +42,12 @@ impl ArtifactVerifier {
             "Public Key Missing for verification".into(),
         ))?;
 
-        ui.verbose("Loading signature verification key");
+        ui.debug("Loading signature verification key");
         let mut archive = ZipArchive::new(File::open(path)?)?;
-        ui.verbose(&format!("Opened archive with {} entries", archive.len()));
+        ui.info(&format!("Opened archive with {} entries", archive.len()));
 
         let mut signature_bytes = Vec::new();
-        ui.verbose(&format!("Reading RSA signature from: {}", CERT_RSA_NAME));
+        ui.debug(&format!("Reading RSA signature from: {}", CERT_RSA_NAME));
         archive
             .by_name(CERT_RSA_NAME)
             .map_err(|_| {
@@ -47,13 +57,13 @@ impl ArtifactVerifier {
                 ))
             })?
             .read_to_end(&mut signature_bytes)?;
-        ui.verbose(&format!(
+        ui.debug(&format!(
             "Read RSA signature ({} bytes)",
             signature_bytes.len()
         ));
 
         let mut sf_file_bytes = Vec::new();
-        ui.verbose(&format!("Reading signature file from: {}", CERT_SF_NAME));
+        ui.debug(&format!("Reading signature file from: {}", CERT_SF_NAME));
         archive
             .by_name(CERT_SF_NAME)
             .map_err(|_| {
@@ -63,19 +73,19 @@ impl ArtifactVerifier {
                 ))
             })?
             .read_to_end(&mut sf_file_bytes)?;
-        ui.verbose(&format!(
+        ui.debug(&format!(
             "Read signature file ({} bytes)",
             sf_file_bytes.len()
         ));
 
-        ui.verbose("Verifying RSA signature against signature file...");
+        ui.debug("Verifying RSA signature against signature file...");
         if let Err(e) = public_key.verify(&sf_file_bytes, &signature_bytes) {
-            ui.verbose(&format!("RSA signature verification failed: {}", e));
+            ui.debug(&format!("RSA signature verification failed: {}", e));
             return Err(SignerError::Validation(
                 format!("Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.", e)
             ));
         }
-        ui.verbose("RSA signature verification passed");
+        ui.debug("RSA signature verification passed");
 
         let mut manifest_bytes = Vec::new();
         archive

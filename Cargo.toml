@@ -21,18 +21,18 @@ pem = "3.0"
 base64 = "0.22"
 rayon = "1.10"
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "suggestions", "error-context"] }
-zip = { version = "2.4", default-features = false, features = ["deflate", "bzip2", "zstd", "lzma", "time"] }
+zip = { version = "2.4", default-features = false, features = ["deflate", "bzip2", "time"] }
 x509-parser = "0.18"
 tempfile = "3.10"
 filetime = "0.2"
 crc32fast = "1.3"
 chrono = "0.4"
-mimalloc = { version = "0.1", default-features = false }
 colored = { version = "2.1", default-features = false }
 indicatif = { version = "0.17", default-features = false }
 tabled = { version = "0.15", default-features = false }
 terminal_size = "0.3"
 simple_asn1 = "0.6"
+mimalloc = "0.1"
 
 
 [profile.release]

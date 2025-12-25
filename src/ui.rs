@@ -1,8 +1,18 @@
-/*
- * ZipSigner Rust v1.0.0
- * Copyright (c) 2026 Tiash H Kabir / @MrCarb0n.
- * Licensed under the MIT License.
- */
+// ZipSigner Rust - High-performance, memory-safe cryptographic signing and verification for Android ZIP archives
+// Copyright (C) 2025 Tiash H Kabir / @MrCarb0n
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{APP_AUTHOR, APP_NAME, APP_VERSION};
 use colored::*;
@@ -16,6 +26,7 @@ pub struct Ui {
     silent: bool,
     colors: bool,
     progress_bar: Arc<Mutex<Option<ProgressBar>>>,
+    is_bytes_progress: Arc<Mutex<bool>>,
     temp_files: Arc<Mutex<Vec<std::path::PathBuf>>>,
 }
 
@@ -34,6 +45,7 @@ impl Ui {
             silent: s,
             colors: c,
             progress_bar: Arc::new(Mutex::new(None)),
+            is_bytes_progress: Arc::new(Mutex::new(false)),
             temp_files: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -46,9 +58,13 @@ impl Ui {
         let pb = ProgressBar::new(len);
         let tw = self.term_width();
         let effective_msg = Self::truncate_msg(msg, tw);
+
+        // For Termux compatibility, adjust the bar width to prevent right-side spacing
+        // (not needed anymore since we use wide_bar which auto-expands)
+
         let template = if tw < 60 {
             format!(
-                "{{spinner:.green}} {} {{bar:.green/red}} {{pos}}/{{len}}",
+                "{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}}",
                 effective_msg
             )
         } else {
@@ -64,16 +80,20 @@ impl Ui {
                 ProgressStyle::default_bar()
                     .template(&if tw < 60 {
                         format!(
-                            "{{spinner:.green}} {} {{bar:5.green}} {{pos}}/{{len}}",
+                            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
                             effective_msg
                         )
                     } else {
                         format!(
-                            "{{spinner:.green}} {} {{bar:5.green}} {{pos}}/{{len}} ({{eta}})",
+                            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}} ({{eta}})",
                             effective_msg
                         )
                     })
-                    .expect("Valid template")
+                    .unwrap_or_else(|_| {
+                        ProgressStyle::default_bar()
+                            .template(&format!("{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}", effective_msg))
+                            .unwrap()
+                    })
             })
             .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
             .progress_chars("#>-");
@@ -122,40 +142,69 @@ impl Ui {
         }
     }
 
+    fn format_bytes(bytes: u64) -> String {
+        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+        if bytes == 0 {
+            return "0B".to_string();
+        }
+
+        let mut size = bytes as f64;
+        let mut unit_idx = 0;
+
+        while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+            size /= 1024.0;
+            unit_idx += 1;
+        }
+
+        if unit_idx == 0 {
+            // For bytes, just show the integer value
+            format!("{}{}", bytes, UNITS[unit_idx])
+        } else {
+            // For larger units, show with one decimal place if needed
+            if size.fract() < 0.01 {  // If fractional part is very small, show as integer
+                format!("{:.0}{}", size, UNITS[unit_idx])
+            } else {
+                format!("{:.1}{}", size, UNITS[unit_idx])
+            }
+        }
+    }
+
     pub fn show_detailed_progress_bar(&self, len: u64, msg: &str, unit: &str) {
         let pb = ProgressBar::new(len);
         let tw = self.term_width();
         let effective_msg = Self::truncate_msg(msg, tw);
+
+        // For Termux compatibility, adjust the bar width to prevent right-side spacing
+        // (not needed anymore since we use wide_bar which auto-expands)
+
         let template = if tw < 60 {
             if unit == "bytes" {
                 format!(
-                    "{{spinner:.green}} {} {{bar:.green/red}} {{bytes}}/{{total_bytes}}",
+                    "{{spinner:.green}} {} {{wide_bar:.green/red}} ({{msg}}) ({{eta}})",
                     effective_msg
                 )
             } else {
                 format!(
-                    "{{spinner:.green}} {} {{bar:.green/red}} {{pos}}/{{len}}",
+                    "{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}}",
                     effective_msg
                 )
             }
         } else if tw < 80 {
             if unit == "bytes" {
                 format!(
-                    "{{spinner:.green}} {} {{bar:.green/red}} {{bytes}}/{{total_bytes}} ({{eta}})",
+                    "{{spinner:.green}} {} {{wide_bar:.green/red}} ({{msg}}) ({{eta}})",
                     effective_msg
                 )
             } else {
                 format!(
-                    "{{spinner:.green}} {} {{bar:.green/red}} {{pos}}/{{len}} [{{percent}}%]",
+                    "{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}} [{{percent}}%]",
                     effective_msg
                 )
             }
+        } else if unit == "bytes" {
+            format!("{{spinner:.green}} {} {{wide_bar:.green/red}} ({{msg}}) ({{eta}})", effective_msg)
         } else {
-            if unit == "bytes" {
-                format!("{{spinner:.green}} {} {{wide_bar:.green/red}} {{bytes}} / {{total_bytes}} ({{eta}})", effective_msg)
-            } else {
-                format!("{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}}) [{{percent}}%]", effective_msg)
-            }
+            format!("{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}}) [{{percent}}%]", effective_msg)
         };
 
         let style = ProgressStyle::default_bar()
@@ -163,24 +212,37 @@ impl Ui {
             .unwrap_or_else(|_| {
                 let ft = if tw < 60 {
                     if unit == "bytes" {
-                        format!("{{spinner:.green}} {} {{bar:5.green}} {{bytes}}/{{total_bytes}}", effective_msg)
+                        format!("{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}})", effective_msg)
                     } else {
-                        format!("{{spinner:.green}} {} {{bar:5.green}} {{pos}}/{{len}}", effective_msg)
+                        format!("{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}", effective_msg)
                     }
+                } else if unit == "bytes" {
+                    format!("{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}}) ({{eta}})", effective_msg)
                 } else {
-                    if unit == "bytes" {
-                        format!("{{spinner:.green}} {} {{bar:5.green}} {{bytes}} / {{total_bytes}} ({{eta}})", effective_msg)
-                    } else {
-                        format!("{{spinner:.green}} {} {{bar:5.green}} {{pos}}/{{len}} ({{eta}})", effective_msg)
-                    }
+                    format!("{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}} ({{eta}})", effective_msg)
                 };
-                ProgressStyle::default_bar().template(&ft).expect("Valid template")
+                ProgressStyle::default_bar().template(&ft).unwrap_or_else(|_| {
+                    ProgressStyle::default_bar()
+                        .template(&format!("{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}", effective_msg))
+                        .unwrap()
+                })
             })
             .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
             .progress_chars("#>-");
 
         pb.set_style(style);
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
+
+        // Set the progress bar message to include formatted byte information
+        if unit == "bytes" {
+            pb.set_message(format!("{}", Self::format_bytes(pb.position())));
+        }
+
+        // Set the bytes progress flag
+        if let Ok(mut is_bytes) = self.is_bytes_progress.lock() {
+            *is_bytes = unit == "bytes";
+        }
+
         if let Ok(mut g) = self.progress_bar.lock() {
             *g = Some(pb);
         }
@@ -190,6 +252,15 @@ impl Ui {
         let _ = self.progress_bar.lock().map(|g| {
             if let Some(ref pb) = *g {
                 pb.set_position(pos);
+
+                // Update the message to show formatted bytes if this is a bytes progress bar
+                if let Ok(is_bytes) = self.is_bytes_progress.lock() {
+                    if *is_bytes {
+                        // Get the total from the progress bar's length
+                        let total = pb.length().unwrap_or(0);
+                        pb.set_message(format!("{} / {}", Self::format_bytes(pos), Self::format_bytes(total)));
+                    }
+                }
             }
         });
     }
@@ -197,6 +268,13 @@ impl Ui {
     pub fn finish_progress(&self) {
         let _ = self.progress_bar.lock().map(|g| {
             if let Some(ref pb) = *g {
+                // Update the message to show final formatted bytes if this is a bytes progress bar
+                if let Ok(is_bytes) = self.is_bytes_progress.lock() {
+                    if *is_bytes {
+                        let total = pb.length().unwrap_or(0);
+                        pb.set_message(format!("{} / {}", Self::format_bytes(total), Self::format_bytes(total)));
+                    }
+                }
                 pb.finish_and_clear();
             }
         });
@@ -213,8 +291,8 @@ impl Ui {
         if self.silent && !is_error {
             return;
         }
-        let tw = self.term_width();
-        let indent_size = if tw < 40 { 2 } else { icon.len() + 1 };
+        // Use consistent indentation regardless of terminal width
+        let indent_size = 4; // Consistent 4-space indentation
         let indent = " ".repeat(indent_size);
         let wrapped = self.wrap_msg(msg, indent_size);
         let lines: Vec<&str> = wrapped.split('\n').collect();
@@ -301,17 +379,17 @@ impl Ui {
                 "{}",
                 "Repository:  https://github.com/MrCarb0n/zipsignerust".cyan()
             );
-            println!("{}", "License:     MIT".green());
+            println!("{}", "License:     GPLv3".green());
             println!(
                 "{}",
                 "Description: High-performance cryptographic signer.".magenta()
             );
         } else {
-            println!("Author:      {}\nRepository:  https://github.com/MrCarb0n/zipsignerust\nLicense:     MIT\nDescription: High-performance cryptographic signer.", APP_AUTHOR);
+            println!("Author:      {}\nRepository:  https://github.com/MrCarb0n/zipsignerust\nLicense:     GPLv3\nDescription: High-performance cryptographic signer.", APP_AUTHOR);
         }
     }
 
-    fn supports_color(&self) -> bool {
+    pub fn supports_color(&self) -> bool {
         std::env::var("NO_COLOR").is_err() && self.colors && {
             #[cfg(windows)]
             {
@@ -343,33 +421,29 @@ impl Ui {
             } else {
                 eprintln!("{}", title);
             }
+        } else if self.colors {
+            eprintln!("{}", header.yellow().bold());
         } else {
-            if self.colors {
-                eprintln!("{}", header.yellow().bold());
-            } else {
-                eprintln!("{}", header);
-            }
+            eprintln!("{}", header);
         }
     }
 
     pub fn info(&self, msg: &str) {
+        // Show for -v and higher (level 1+) - corresponds to info level
         if self.verbose {
             self.paint("[i]", msg, "34", false, false);
         }
     }
-    pub fn verbose(&self, msg: &str) {
-        if self.verbose {
-            self.paint("[v]", msg, "2", false, true);
-        }
-    }
-    pub fn very_verbose(&self, msg: &str) {
-        if self.very_verbose {
-            self.paint("[vv]", msg, "2", false, true);
-        }
-    }
     pub fn debug(&self, msg: &str) {
+        // Show for -vv and higher (level 2+) - corresponds to debug level
+        if self.very_verbose {
+            self.paint("[d]", msg, "2", false, true);
+        }
+    }
+    pub fn trace(&self, msg: &str) {
+        // Show for -vvv and higher (level 3+) - corresponds to trace level
         if self.debug {
-            self.paint("[dbg]", msg, "2", false, true);
+            self.paint("[t]", msg, "2", false, true);
         }
     }
     pub fn success(&self, msg: &str) {
@@ -386,6 +460,58 @@ impl Ui {
         self.paint("[x]", msg, "31", true, false);
     }
 
+    /// Print a section header with consistent styling
+    pub fn print_section_header(&self, title: &str) {
+        if self.colors {
+            eprintln!("{}", format!("{}:", title).green().bold());
+        } else {
+            eprintln!("{}:", title);
+        }
+    }
+
+    /// Print a help item with standardized formatting
+    pub fn print_help_item(&self, command: &str, description: &str) {
+        const COLUMN_WIDTH: usize = 18; // Fixed width for command column
+        let padded_command = format!("  {:<width$}", command, width = COLUMN_WIDTH - 2);
+
+        // Calculate the indent for wrapped lines
+        let indent_size = COLUMN_WIDTH;
+
+        // Wrap the description using UI's wrap_msg function with the calculated indent
+        let wrapped_description = self.wrap_msg(description, indent_size);
+
+        // Split the wrapped text into lines
+        let lines: Vec<&str> = wrapped_description.split('\n').collect();
+
+        for (i, line) in lines.iter().enumerate() {
+            if i == 0 {
+                // First line: padded command + first part of description
+                if self.colors {
+                    eprintln!("{}{}", padded_command, line.normal());
+                } else {
+                    eprintln!("{}{}", padded_command, line);
+                }
+            } else {
+                // Subsequent lines: align with the description start column
+                let indent = " ".repeat(indent_size);
+                if self.colors {
+                    eprintln!("{}{}", indent, line.normal());
+                } else {
+                    eprintln!("{}{}", indent, line);
+                }
+            }
+        }
+    }
+
+    /// Print a help section with multiple items
+    pub fn print_help_section(&self, title: &str, items: &[(&str, &str)]) {
+        self.print_section_header(title);
+        for (command, description) in items {
+            self.print_help_item(command, description);
+        }
+        eprintln!();
+    }
+
     pub fn print_summary(&self, title: &str, fields: &[(&str, String)]) {
         if self.silent || !self.verbose {
             return;
@@ -395,27 +521,18 @@ impl Ui {
         } else {
             eprintln!("{}:", title);
         }
-        let tw = self.term_width();
 
         for (key, val) in fields {
-            let base_indent = if tw < 60 { 2 } else { key.len() + 2 };
+            let base_indent = 4; // Consistent 4-space indentation like other UI elements
             let wrapped = self.wrap_msg(val, base_indent);
             let lines: Vec<&str> = wrapped.split('\n').collect();
 
             for (i, line) in lines.iter().enumerate() {
                 if i == 0 {
-                    if tw < 60 {
-                        if self.colors {
-                            eprintln!("{}: {}", key.cyan().bold(), line.green());
-                        } else {
-                            eprintln!("{}: {}", key, line);
-                        }
+                    if self.colors {
+                        eprintln!("    {}: {}", key.cyan().bold(), line.green());
                     } else {
-                        if self.colors {
-                            eprintln!("  {:<8} {}", key.cyan().bold(), line.green());
-                        } else {
-                            eprintln!("  {:<8} {}", key, line);
-                        }
+                        eprintln!("    {}: {}", key, line);
                     }
                 } else if self.colors {
                     eprintln!("{}{}", " ".repeat(base_indent), line.green());
@@ -426,7 +543,7 @@ impl Ui {
         }
     }
 
-    fn wrap_msg(&self, msg: &str, indent: usize) -> String {
+    pub fn wrap_msg(&self, msg: &str, indent: usize) -> String {
         let max_width = self.term_width();
         let effective_width = if max_width > 20 {
             max_width.saturating_sub(indent).max(20)
