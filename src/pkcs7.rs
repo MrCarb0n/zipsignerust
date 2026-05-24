@@ -42,6 +42,127 @@ fn wrap_tag(tag: u8, content: &[u8]) -> Vec<u8> {
     res
 }
 
+fn parse_der_tlv(data: &[u8]) -> Result<(u8, Vec<u8>, &[u8]), SignerError> {
+    if data.is_empty() {
+        return Err(SignerError::Validation("Empty DER data".into()));
+    }
+    let tag = data[0];
+    let (len, after_len) = if data[1] < 0x80 {
+        (data[1] as usize, &data[2..])
+    } else {
+        let num_bytes = (data[1] & 0x7F) as usize;
+        if data.len() < 2 + num_bytes {
+            return Err(SignerError::Validation("Truncated DER length".into()));
+        }
+        let mut l = 0usize;
+        for i in 0..num_bytes {
+            l = (l << 8) | data[2 + i] as usize;
+        }
+        (l, &data[2 + num_bytes..])
+    };
+    if after_len.len() < len {
+        return Err(SignerError::Validation("Truncated DER value".into()));
+    }
+    let value = after_len[..len].to_vec();
+    let rest = &after_len[len..];
+    Ok((tag, value, rest))
+}
+
+fn skip_der_element(data: &[u8]) -> Result<&[u8], SignerError> {
+    let (_, _, rest) = parse_der_tlv(data)?;
+    Ok(rest)
+}
+
+fn find_der_element(data: &[u8], target_tag: u8) -> Result<(Vec<u8>, &[u8]), SignerError> {
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        let (tag, value, rest) = parse_der_tlv(remaining)?;
+        if tag == target_tag {
+            return Ok((value, rest));
+        }
+        remaining = rest;
+    }
+    Err(SignerError::Validation(format!("DER tag 0x{target_tag:02X} not found")))
+}
+
+/// PKCS7 signer info extracted from a signature blob.
+pub struct SignerInfo {
+    pub signature: Vec<u8>,
+    pub auth_attrs_der: Vec<u8>,
+    pub message_digest: Vec<u8>,
+}
+
+/// Extract PKCS7 signer info: signature_bytes, auth_attrs_der_with_set_tag, expected_sf_digest
+pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> {
+    let (_, ci_content, _) = parse_der_tlv(pkcs7_der)?;
+    let (_oid, rest) = find_der_element(&ci_content, 0x06)?;
+    let (sd_raw, _) = find_der_element(rest, 0xA0)?;
+    let (_, sd_content, _) = parse_der_tlv(&sd_raw)?;
+
+    let mut cursor = &sd_content[..];
+    cursor = skip_der_element(cursor)?;
+    cursor = skip_der_element(cursor)?;
+    cursor = skip_der_element(cursor)?;
+    if cursor.first() == Some(&0xA0) {
+        cursor = skip_der_element(cursor)?;
+    }
+    let (si_set, _) = find_der_element(cursor, 0x31)?;
+    let (_, si_content, _) = parse_der_tlv(&si_set)?;
+
+    cursor = &si_content[..];
+    cursor = skip_der_element(cursor)?;
+    cursor = skip_der_element(cursor)?;
+    cursor = skip_der_element(cursor)?;
+    let (auth_attrs_raw, rest) = find_der_element(cursor, 0xA0)?;
+    cursor = rest;
+    cursor = skip_der_element(cursor)?;
+    let (sig_octet, _) = find_der_element(cursor, 0x04)?;
+
+    let auth_attrs_with_set = wrap_tag(0x31, &auth_attrs_raw);
+
+    let digest = extract_message_digest(&auth_attrs_raw)?;
+
+    Ok(SignerInfo {
+        signature: sig_octet,
+        auth_attrs_der: auth_attrs_with_set,
+        message_digest: digest,
+    })
+}
+
+fn extract_message_digest(auth_attrs_raw: &[u8]) -> Result<Vec<u8>, SignerError> {
+    let mut cursor = auth_attrs_raw;
+    while !cursor.is_empty() {
+        let (tag, value, rest) = parse_der_tlv(cursor)?;
+        if tag == 0x30 {
+            if let Ok(digest) = try_extract_digest_from_sequence(&value) {
+                return Ok(digest);
+            }
+        }
+        cursor = rest;
+    }
+    Err(SignerError::Validation("messageDigest not found in authenticated attributes".into()))
+}
+
+fn try_extract_digest_from_sequence(seq_content: &[u8]) -> Result<Vec<u8>, SignerError> {
+    let (tag, oid_value, rest) = parse_der_tlv(seq_content)?;
+    if tag != 0x06 {
+        return Err(SignerError::Validation("Expected OID in attribute SEQUENCE".into()));
+    }
+    let msg_digest_oid = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x04];
+    if oid_value != msg_digest_oid {
+        return Err(SignerError::Validation("Not messageDigest OID".into()));
+    }
+    let (set_tag, set_content, _) = parse_der_tlv(rest)?;
+    if set_tag != 0x31 {
+        return Err(SignerError::Validation("Expected SET after OID".into()));
+    }
+    let (octet_tag, octet_value, _) = parse_der_tlv(&set_content)?;
+    if octet_tag != 0x04 {
+        return Err(SignerError::Validation("Expected OCTET STRING".into()));
+    }
+    Ok(octet_value)
+}
+
 pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     use ring::{digest, signature};
 

@@ -6,3 +6,6 @@ Cargo.lock
 build.sh
 key.sh
 certs/
+.claude/
+AGENTS.md
+CLAUDE.md

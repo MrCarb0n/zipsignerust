@@ -19,15 +19,19 @@ use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::{Arc, Mutex};
 
+struct UiInner {
+    progress_bar: Option<ProgressBar>,
+    is_bytes_progress: bool,
+    temp_files: Vec<std::path::PathBuf>,
+}
+
 pub struct Ui {
     pub verbose: bool,
     pub very_verbose: bool,
     pub debug: bool,
     silent: bool,
     colors: bool,
-    progress_bar: Arc<Mutex<Option<ProgressBar>>>,
-    is_bytes_progress: Arc<Mutex<bool>>,
-    temp_files: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    inner: Arc<Mutex<UiInner>>,
 }
 
 impl Default for Ui {
@@ -44,9 +48,11 @@ impl Ui {
             debug: d,
             silent: s,
             colors: c,
-            progress_bar: Arc::new(Mutex::new(None)),
-            is_bytes_progress: Arc::new(Mutex::new(false)),
-            temp_files: Arc::new(Mutex::new(Vec::new())),
+            inner: Arc::new(Mutex::new(UiInner {
+                progress_bar: None,
+                is_bytes_progress: false,
+                temp_files: Vec::new(),
+            })),
         }
     }
 
@@ -100,15 +106,15 @@ impl Ui {
 
         pb.set_style(style);
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
-        if let Ok(mut g) = self.progress_bar.lock() {
-            *g = Some(pb);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.progress_bar = Some(pb);
         }
     }
 
     pub fn record_temp_file(&self, path: &std::path::Path) {
         if self.debug {
-            if let Ok(mut files) = self.temp_files.lock() {
-                files.push(path.to_path_buf());
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.temp_files.push(path.to_path_buf());
                 self.debug(&format!("Recorded: {:?}", path));
             }
         }
@@ -116,10 +122,10 @@ impl Ui {
 
     pub fn print_temp_files(&self) {
         if self.debug {
-            if let Ok(files) = self.temp_files.lock() {
-                if !files.is_empty() {
-                    self.info(&format!("Files: {} item(s)", files.len()));
-                    for path in files.iter() {
+            if let Ok(inner) = self.inner.lock() {
+                if !inner.temp_files.is_empty() {
+                    self.info(&format!("Files: {} item(s)", inner.temp_files.len()));
+                    for path in inner.temp_files.iter() {
                         self.debug(&format!("  - {:?}", path));
                     }
                 }
@@ -235,55 +241,45 @@ impl Ui {
 
         // Set the progress bar message to include formatted byte information
         if unit == "bytes" {
-            pb.set_message(format!("{}", Self::format_bytes(pb.position())));
+                pb.set_message(Self::format_bytes(pb.position()));
         }
 
-        // Set the bytes progress flag
-        if let Ok(mut is_bytes) = self.is_bytes_progress.lock() {
-            *is_bytes = unit == "bytes";
-        }
-
-        if let Ok(mut g) = self.progress_bar.lock() {
-            *g = Some(pb);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.is_bytes_progress = unit == "bytes";
+            inner.progress_bar = Some(pb);
         }
     }
 
     pub fn update_progress(&self, pos: u64) {
-        let _ = self.progress_bar.lock().map(|g| {
-            if let Some(ref pb) = *g {
+        let _ = self.inner.lock().map(|inner| {
+            if let Some(ref pb) = inner.progress_bar {
                 pb.set_position(pos);
 
-                // Update the message to show formatted bytes if this is a bytes progress bar
-                if let Ok(is_bytes) = self.is_bytes_progress.lock() {
-                    if *is_bytes {
-                        // Get the total from the progress bar's length
-                        let total = pb.length().unwrap_or(0);
-                        pb.set_message(format!("{} / {}", Self::format_bytes(pos), Self::format_bytes(total)));
-                    }
+                if inner.is_bytes_progress {
+                    let total = pb.length().unwrap_or(0);
+                    pb.set_message(format!("{} / {}", Self::format_bytes(pos), Self::format_bytes(total)));
                 }
             }
         });
     }
 
     pub fn finish_progress(&self) {
-        let _ = self.progress_bar.lock().map(|g| {
-            if let Some(ref pb) = *g {
-                // Update the message to show final formatted bytes if this is a bytes progress bar
-                if let Ok(is_bytes) = self.is_bytes_progress.lock() {
-                    if *is_bytes {
-                        let total = pb.length().unwrap_or(0);
-                        pb.set_message(format!("{} / {}", Self::format_bytes(total), Self::format_bytes(total)));
-                    }
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(ref pb) = inner.progress_bar {
+                if inner.is_bytes_progress {
+                    let total = pb.length().unwrap_or(0);
+                    pb.set_message(format!("{} / {}", Self::format_bytes(total), Self::format_bytes(total)));
                 }
                 pb.finish_and_clear();
             }
-        });
+            inner.progress_bar = None;
+        }
     }
 
     pub fn has_progress_bar(&self) -> bool {
-        self.progress_bar
+        self.inner
             .lock()
-            .map(|g| g.is_some())
+            .map(|inner| inner.progress_bar.is_some())
             .unwrap_or(false)
     }
 
@@ -615,5 +611,85 @@ impl Ui {
                 None
             })
             .unwrap_or(80)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_bytes_zero() {
+        assert_eq!(Ui::format_bytes(0), "0B");
+    }
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(Ui::format_bytes(500), "500B");
+    }
+
+    #[test]
+    fn test_format_bytes_kb() {
+        assert_eq!(Ui::format_bytes(1024), "1KB");
+        assert_eq!(Ui::format_bytes(1536), "1.5KB");
+    }
+
+    #[test]
+    fn test_format_bytes_mb() {
+        assert_eq!(Ui::format_bytes(1048576), "1MB");
+        assert_eq!(Ui::format_bytes(2097152), "2MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gb() {
+        assert_eq!(Ui::format_bytes(1073741824), "1GB");
+    }
+
+    #[test]
+    fn test_truncate_msg_short() {
+        assert_eq!(Ui::truncate_msg("hello", 100), "hello");
+    }
+
+    #[test]
+    fn test_truncate_msg_wide_terminal() {
+        let msg = "hello world this is long";
+        // tw >= 80 -> max_chars = usize::MAX -> no truncation
+        assert_eq!(Ui::truncate_msg(msg, 100), msg);
+    }
+
+    #[test]
+    fn test_truncate_msg_very_narrow() {
+        let msg = "hello world this is very long message";
+        // terminal width 30 -> max_chars = 8 -> truncation
+        let result = Ui::truncate_msg(msg, 30);
+        assert_eq!(result, "hello wo...");
+    }
+
+    #[test]
+    fn test_new_ui_defaults() {
+        let ui = Ui::new(false, false, false, true, false);
+        assert!(!ui.verbose);
+        assert!(!ui.very_verbose);
+        assert!(!ui.debug);
+        assert!(ui.silent);
+        assert!(!ui.colors);
+    }
+
+    #[test]
+    fn test_from_verbosity_level() {
+        let ui = Ui::from_verbosity_level(1, false, true);
+        assert!(ui.verbose);
+        assert!(!ui.very_verbose);
+        assert!(!ui.debug);
+
+        let ui = Ui::from_verbosity_level(2, false, true);
+        assert!(ui.verbose);
+        assert!(ui.very_verbose);
+        assert!(!ui.debug);
+
+        let ui = Ui::from_verbosity_level(3, false, true);
+        assert!(ui.verbose);
+        assert!(ui.very_verbose);
+        assert!(ui.debug);
     }
 }

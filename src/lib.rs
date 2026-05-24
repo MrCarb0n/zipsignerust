@@ -23,7 +23,6 @@ pub mod error;
 pub mod keys;
 pub mod pkcs7;
 pub mod processor;
-pub mod signing;
 pub mod ui;
 pub mod verification;
 

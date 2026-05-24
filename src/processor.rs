@@ -170,15 +170,7 @@ impl ArtifactProcessor {
         ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        let mut writer =
-            ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
-        let mf = Self::gen_manifest(digests);
-        let sf = Self::gen_sf(&mf, digests);
-        let rsa = Self::gen_rsa(keys, &sf)?;
-
-        Self::write_entry(&mut writer, MANIFEST_NAME, &mf, timestamp)?;
-        Self::write_entry(&mut writer, CERT_SF_NAME, &sf, timestamp)?;
-        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa, timestamp)?;
+        let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let mut total_size = 0u64;
@@ -309,23 +301,7 @@ impl ArtifactProcessor {
             Ok::<(), SignerError>(())
         })?;
 
-        if ui.debug {
-            ui.debug(&format!("Output: {}", output.display()));
-        } else {
-            ui.info(&format!("Output: {}", output.display()));
-        }
-
-        if ui.verbose && ui.has_progress_bar() {
-            ui.finish_progress();
-        }
-        writer.finish()?;
-        ui.debug("Finalized ZIP");
-        let ft = FileTime::from_system_time(std::time::SystemTime::now());
-        set_file_times(output, ft, ft)?;
-        ui.debug(&format!("Time: {}", output.display()));
-        ui.debug("Integrity check...");
-        Self::verify_zip_integrity_with_ui(output, Some(ui))?;
-        ui.debug("Integrity OK");
+        Self::finalize_zip_writer(writer, output, ui, "Output")?;
         Ok(())
     }
 
@@ -338,15 +314,7 @@ impl ArtifactProcessor {
         ui: &Ui,
     ) -> Result<(), SignerError> {
         let timestamp = keys.get_reproducible_timestamp();
-        let mut writer =
-            ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
-        let mf = Self::gen_manifest(digests);
-        let sf = Self::gen_sf(&mf, digests);
-        let rsa = Self::gen_rsa(keys, &sf)?;
-
-        Self::write_entry(&mut writer, MANIFEST_NAME, &mf, timestamp)?;
-        Self::write_entry(&mut writer, CERT_SF_NAME, &sf, timestamp)?;
-        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa, timestamp)?;
+        let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let mut total_size = 0u64;
@@ -419,15 +387,41 @@ impl ArtifactProcessor {
             Ok::<(), SignerError>(())
         })?;
 
-        ui.debug(&format!("Sources: {}", output.display()));
+        Self::finalize_zip_writer(writer, output, ui, "Sources")?;
+        Ok(())
+    }
+
+    fn init_zip_writer(
+        output: &Path,
+        keys: &KeyChain,
+        digests: &BTreeMap<String, String>,
+        timestamp: DateTime,
+    ) -> Result<ZipWriter<BufWriter<File>>, SignerError> {
+        let mut writer = ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
+        let mf = Self::gen_manifest(digests);
+        let sf = Self::gen_sf(&mf, digests);
+        let rsa = Self::gen_rsa(keys, &sf)?;
+
+        Self::write_entry(&mut writer, MANIFEST_NAME, &mf, timestamp)?;
+        Self::write_entry(&mut writer, CERT_SF_NAME, &sf, timestamp)?;
+        Self::write_entry(&mut writer, CERT_RSA_NAME, &rsa, timestamp)?;
+
+        Ok(writer)
+    }
+
+    fn finalize_zip_writer(
+        writer: ZipWriter<BufWriter<File>>,
+        output: &Path,
+        ui: &Ui,
+        label: &str,
+    ) -> Result<(), SignerError> {
         if ui.verbose && ui.has_progress_bar() {
             ui.finish_progress();
         }
         writer.finish()?;
-        ui.debug("Finalized ZIP");
+        ui.debug(&format!("{}: {}", label, output.display()));
         let ft = FileTime::from_system_time(std::time::SystemTime::now());
         set_file_times(output, ft, ft)?;
-        ui.debug(&format!("Time: {}", output.display()));
         ui.debug("Integrity check...");
         Self::verify_zip_integrity_with_ui(output, Some(ui))?;
         ui.debug("Integrity OK");
@@ -462,7 +456,16 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
+    pub(crate) fn is_non_wrapping_field(key: &str) -> bool {
+        key == "Name"
+            || key.contains("-Digest")
+            || key.contains("_Digest")
+            || key == "SHA1-Digest-Manifest"
+            || key == "SHA-256-Digest-Manifest"
+            || key == "MD5-Digest-Manifest"
+    }
+
+    pub(crate) fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
         let line = if Self::is_non_wrapping_field(key) {
             let line = format!("{}: {}", key, value).into_bytes();
             let mut result = Vec::with_capacity(line.len() + 2);
@@ -491,16 +494,7 @@ impl ArtifactProcessor {
         out.extend_from_slice(&line);
     }
 
-    fn is_non_wrapping_field(key: &str) -> bool {
-        key == "Name"
-            || key.contains("-Digest")
-            || key.contains("_Digest")
-            || key == "SHA1-Digest-Manifest"
-            || key == "SHA-256-Digest-Manifest"
-            || key == "MD5-Digest-Manifest"
-    }
-
-    fn create_manifest_entry(name: &str, hash: &str) -> Vec<u8> {
+    pub(crate) fn create_manifest_entry(name: &str, hash: &str) -> Vec<u8> {
         let mut entry = Vec::with_capacity(name.len() + hash.len() + 50);
         Self::write_manifest_line(&mut entry, "Name", name);
         Self::write_manifest_line(&mut entry, "SHA1-Digest", hash);
@@ -548,6 +542,30 @@ impl ArtifactProcessor {
         Self::verify_zip_integrity_with_ui(path, None)
     }
 
+    fn verify_entry_crc(
+        f: &mut zip::read::ZipFile,
+        buf: &mut [u8],
+    ) -> Result<(), SignerError> {
+        let mut hasher = Crc32::new();
+        loop {
+            let n = f.read(buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let (stored, computed) = (f.crc32(), hasher.finalize());
+        if stored != computed {
+            return Err(SignerError::Validation(format!(
+                "CRC: `{}` s={:#010x}, c={:#010x}",
+                f.name(),
+                stored,
+                computed
+            )));
+        }
+        Ok(())
+    }
+
     pub fn verify_zip_integrity_with_ui(path: &Path, ui: Option<&Ui>) -> Result<(), SignerError> {
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let mut total_size = 0u64;
@@ -567,72 +585,154 @@ impl ArtifactProcessor {
                 let mut pos = 0u64;
                 for i in 0..archive.len() {
                     let mut f = archive.by_index(i)?;
-                    let mut hasher = Crc32::new();
-                    loop {
-                        let n = f.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        hasher.update(&buf[..n]);
-                        pos += n as u64;
-                        ui.update_progress(pos);
-                    }
-                    let (s, c) = (f.crc32(), hasher.finalize());
-                    if s != c {
-                        ui.finish_progress();
-                        return Err(SignerError::Validation(format!(
-                            "CRC: `{}` s={:#010x}, c={:#010x}",
-                            f.name(),
-                            s,
-                            c
-                        )));
-                    }
+                    Self::verify_entry_crc(&mut f, &mut buf)?;
+                    pos += f.size();
+                    ui.update_progress(pos);
                 }
                 ui.finish_progress();
             } else {
                 for i in 0..archive.len() {
                     let mut f = archive.by_index(i)?;
-                    let mut hasher = Crc32::new();
-                    loop {
-                        let n = f.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        hasher.update(&buf[..n]);
-                    }
-                    let (s, c) = (f.crc32(), hasher.finalize());
-                    if s != c {
-                        return Err(SignerError::Validation(format!(
-                            "CRC: `{}` s={:#010x}, c={:#010x}",
-                            f.name(),
-                            s,
-                            c
-                        )));
-                    }
+                    Self::verify_entry_crc(&mut f, &mut buf)?;
                 }
             }
         } else {
             for i in 0..archive.len() {
                 let mut f = archive.by_index(i)?;
-                let mut hasher = Crc32::new();
-                loop {
-                    let n = f.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    hasher.update(&buf[..n]);
-                }
-                let (s, c) = (f.crc32(), hasher.finalize());
-                if s != c {
-                    return Err(SignerError::Validation(format!(
-                        "CRC: `{}` s={:#010x}, c={:#010x}",
-                        f.name(),
-                        s,
-                        c
-                    )));
-                }
+                Self::verify_entry_crc(&mut f, &mut buf)?;
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_sig_file_manifest() {
+        assert!(ArtifactProcessor::is_sig_file("META-INF/MANIFEST.MF"));
+    }
+
+    #[test]
+    fn test_is_sig_file_cert_sf() {
+        assert!(ArtifactProcessor::is_sig_file("META-INF/CERT.SF"));
+    }
+
+    #[test]
+    fn test_is_sig_file_cert_rsa() {
+        assert!(ArtifactProcessor::is_sig_file("META-INF/CERT.RSA"));
+    }
+
+    #[test]
+    fn test_is_sig_file_other_sf() {
+        assert!(ArtifactProcessor::is_sig_file("META-INF/ANDROID.SF"));
+        assert!(ArtifactProcessor::is_sig_file("META-INF/CERT.SF"));
+    }
+
+    #[test]
+    fn test_is_sig_file_other_rsa() {
+        assert!(ArtifactProcessor::is_sig_file("META-INF/CERT.RSA"));
+        assert!(ArtifactProcessor::is_sig_file("META-INF/SIGN.RSA"));
+    }
+
+    #[test]
+    fn test_is_sig_file_rejects_normal_file() {
+        assert!(!ArtifactProcessor::is_sig_file("classes.dex"));
+        assert!(!ArtifactProcessor::is_sig_file("AndroidManifest.xml"));
+    }
+
+    #[test]
+    fn test_is_sig_file_rejects_meta_inf_subdir() {
+        assert!(!ArtifactProcessor::is_sig_file("META-INF/services/somefile"));
+    }
+
+    #[test]
+    fn test_is_non_wrapping_field_name() {
+        assert!(ArtifactProcessor::is_non_wrapping_field("Name"));
+    }
+
+    #[test]
+    fn test_is_non_wrapping_field_digest() {
+        assert!(ArtifactProcessor::is_non_wrapping_field("SHA1-Digest"));
+        assert!(ArtifactProcessor::is_non_wrapping_field("SHA-256-Digest"));
+        assert!(ArtifactProcessor::is_non_wrapping_field("SHA1-Digest-Manifest"));
+    }
+
+    #[test]
+    fn test_is_non_wrapping_field_other() {
+        assert!(!ArtifactProcessor::is_non_wrapping_field("Created-By"));
+        assert!(!ArtifactProcessor::is_non_wrapping_field("Manifest-Version"));
+    }
+
+    #[test]
+    fn test_write_manifest_line_non_wrapping() {
+        let mut out = Vec::new();
+        ArtifactProcessor::write_manifest_line(&mut out, "Name", "test.txt");
+        assert_eq!(String::from_utf8(out).unwrap(), "Name: test.txt\r\n");
+    }
+
+    #[test]
+    fn test_write_manifest_line_wrapping() {
+        let long_val = "A".repeat(100);
+        let mut out = Vec::new();
+        ArtifactProcessor::write_manifest_line(&mut out, "Created-By", &long_val);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.starts_with("Created-By: "));
+        assert!(s.ends_with("\r\n"));
+        assert!(s.len() > 100);
+        // Check wrapping: second line should start with space
+        let lines: Vec<&str> = s.split("\r\n").collect();
+        for line in &lines[1..] {
+            if !line.is_empty() {
+                assert!(line.starts_with(' '), "wrapped line should start with space: {:?}", line);
+            }
+        }
+    }
+
+    #[test]
+    fn test_create_manifest_entry() {
+        let entry = ArtifactProcessor::create_manifest_entry("test.txt", "abc123");
+        let s = String::from_utf8(entry).unwrap();
+        assert!(s.contains("Name: test.txt"));
+        assert!(s.contains("SHA1-Digest: abc123"));
+        assert!(s.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn test_gen_manifest_empty() {
+        let digests = BTreeMap::new();
+        let mf = ArtifactProcessor::gen_manifest(&digests);
+        let s = String::from_utf8(mf).unwrap();
+        assert!(s.starts_with("Manifest-Version: 1.0\r\n"));
+        assert!(s.contains("Created-By"));
+        // No file entries
+        assert_eq!(s.matches("Name:").count(), 0);
+    }
+
+    #[test]
+    fn test_gen_manifest_entries() {
+        let mut digests = BTreeMap::new();
+        digests.insert("file1.txt".into(), "hash1".into());
+        digests.insert("file2.txt".into(), "hash2".into());
+        let mf = ArtifactProcessor::gen_manifest(&digests);
+        let s = String::from_utf8(mf).unwrap();
+        assert!(s.contains("Name: file1.txt"));
+        assert!(s.contains("Name: file2.txt"));
+        assert!(s.contains("SHA1-Digest: hash1"));
+        assert!(s.contains("SHA1-Digest: hash2"));
+    }
+
+    #[test]
+    fn test_gen_sf_manifest_hash() {
+        let mut digests = BTreeMap::new();
+        digests.insert("a.txt".into(), "h1".into());
+        let mf = ArtifactProcessor::gen_manifest(&digests);
+        let sf = ArtifactProcessor::gen_sf(&mf, &digests);
+        let s = String::from_utf8(sf).unwrap();
+        assert!(s.contains("Signature-Version: 1.0"));
+        assert!(s.contains("SHA1-Digest-Manifest"));
+        assert!(s.contains("Name: a.txt"));
     }
 }

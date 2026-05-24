@@ -19,8 +19,8 @@ use std::io::Read;
 use zip::ZipArchive;
 
 use crate::{
-    crypto::CryptoEngine, error::SignerError, keys::KeyChain, CERT_RSA_NAME, CERT_SF_NAME,
-    MANIFEST_NAME,
+    crypto::CryptoEngine, error::SignerError, keys::KeyChain, pkcs7, processor::ArtifactProcessor,
+    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 
 /// Verifies signatures on Android archive files
@@ -78,14 +78,28 @@ impl ArtifactVerifier {
             sf_file_bytes.len()
         ));
 
-        ui.debug("Verifying RSA signature against signature file...");
-        if let Err(e) = public_key.verify(&sf_file_bytes, &signature_bytes) {
+        ui.debug("Extracting PKCS7 signature data...");
+        let signer_info = pkcs7::extract_signer_info(&signature_bytes)?;
+
+        ui.debug("Verifying RSA signature over PKCS7 authenticated attributes...");
+        if let Err(e) = public_key.verify(&signer_info.auth_attrs_der, &signer_info.signature) {
             ui.debug(&format!("RSA signature verification failed: {}", e));
             return Err(SignerError::Validation(
                 format!("Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.", e)
             ));
         }
         ui.debug("RSA signature verification passed");
+
+        ui.debug("Verifying SF file digest matches PKCS7 messageDigest...");
+        let sf_digest = ring::digest::digest(&ring::digest::SHA256, &sf_file_bytes);
+        if sf_digest.as_ref() != signer_info.message_digest.as_slice() {
+            return Err(SignerError::Validation(                format!(
+                "SF file digest mismatch. Computed: {:?}, Expected: {:?}",
+                sf_digest.as_ref(),
+                signer_info.message_digest
+            )));
+        }
+        ui.debug("SF file digest matches PKCS7 messageDigest");
 
         let mut manifest_bytes = Vec::new();
         archive
@@ -172,7 +186,7 @@ impl ArtifactVerifier {
         }
 
         for (name, m_digest) in &manifest_entries {
-            let entry_bytes = Self::make_manifest_entry_bytes(name, m_digest);
+            let entry_bytes = ArtifactProcessor::create_manifest_entry(name, m_digest);
             let entry_hash = CryptoEngine::compute_sha1(&entry_bytes);
             let sf_digest = sf_entries.get(name).ok_or_else(|| {
                 SignerError::Validation(format!(
@@ -230,47 +244,91 @@ impl ArtifactVerifier {
         }
         map
     }
+}
 
-    fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
-        // Check if this field should not be wrapped according to JAR specification
-        // Using the same comprehensive check as in processor module
-        let should_not_wrap = key == "Name"
-            || key.contains("-Digest")
-            || key.contains("_Digest")
-            || key == "SHA1-Digest-Manifest"
-            || key == "SHA-256-Digest-Manifest"
-            || key == "MD5-Digest-Manifest";
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if should_not_wrap {
-            // Write the full line without wrapping for Name fields, digest values, etc.
-            // Explicitly avoid any potential for line breaks by joining key, value with colon-space
-            let line = format!("{}: {}", key, value);
-            out.extend_from_slice(line.as_bytes());
-            out.extend_from_slice(b"\r\n");
-        } else {
-            // Apply line wrapping for other fields (RFC 2822-style)
-            let line = format!("{}: {}", key, value).into_bytes();
-            let mut cursor = 0;
-            let len = line.len();
-            while cursor < len {
-                let remaining = len - cursor;
-                let limit = if cursor == 0 { 72 } else { 71 };
-                let chunk_size = std::cmp::min(remaining, limit);
-                if cursor > 0 {
-                    out.push(b' ');
-                }
-                out.extend_from_slice(&line[cursor..cursor + chunk_size]);
-                out.extend_from_slice(b"\r\n");
-                cursor += chunk_size;
-            }
-        }
+    #[test]
+    fn test_unfold_lines_no_continuation() {
+        // split("\r\n") on string ending with \r\n produces trailing empty entry
+        let lines = ArtifactVerifier::unfold_lines("Name: test.txt\r\nSHA1-Digest: abc\r\n");
+        assert_eq!(lines[0], "Name: test.txt");
+        assert_eq!(lines[1], "SHA1-Digest: abc");
+        assert_eq!(lines[2], "");
     }
 
-    fn make_manifest_entry_bytes(name: &str, hash: &str) -> Vec<u8> {
-        let mut entry = Vec::new();
-        Self::write_manifest_line(&mut entry, "Name", name);
-        Self::write_manifest_line(&mut entry, "SHA1-Digest", hash);
-        entry.extend_from_slice(b"\r\n");
-        entry
+    #[test]
+    fn test_unfold_lines_with_continuation() {
+        let s = "Created-By: ZipSigner\r\n Test\r\n";
+        let lines = ArtifactVerifier::unfold_lines(s);
+        assert_eq!(lines[0], "Created-By: ZipSignerTest");
+        assert_eq!(lines[1], "");
+    }
+
+    #[test]
+    fn test_unfold_lines_multiple_continuations() {
+        let s = "Long: part1\r\n part2\r\n part3\r\n";
+        let lines = ArtifactVerifier::unfold_lines(s);
+        assert_eq!(lines[0], "Long: part1part2part3");
+        assert_eq!(lines[1], "");
+    }
+
+    #[test]
+    fn test_unfold_lines_no_trailing_newline() {
+        // Without trailing \r\n, no empty entry at end
+        let lines = ArtifactVerifier::unfold_lines("Name: test.txt\r\nSHA1-Digest: abc");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Name: test.txt");
+        assert_eq!(lines[1], "SHA1-Digest: abc");
+    }
+
+    #[test]
+    fn test_parse_entries_single() {
+        let lines = vec![
+            "Name: f.txt".into(),
+            "SHA1-Digest: d1".into(),
+            "".into(),
+        ];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("f.txt").unwrap(), "d1");
+    }
+
+    #[test]
+    fn test_parse_entries_multiple() {
+        let lines = vec![
+            "Name: a.txt".into(),
+            "SHA1-Digest: da".into(),
+            "".into(),
+            "Name: b.txt".into(),
+            "SHA1-Digest: db".into(),
+            "".into(),
+        ];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a.txt").unwrap(), "da");
+        assert_eq!(map.get("b.txt").unwrap(), "db");
+    }
+
+    #[test]
+    fn test_parse_entries_empty() {
+        let lines = vec!["Manifest-Version: 1.0".into()];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_entries_skips_non_name_digest() {
+        let lines = vec![
+            "Name: x.txt".into(),
+            "SHA1-Digest: dx".into(),
+            "Extra-Field: junk".into(),
+            "".into(),
+        ];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("x.txt").unwrap(), "dx");
     }
 }
