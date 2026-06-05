@@ -278,7 +278,7 @@ fn run_sign(
     ui.print_mode_header("SIGNING MODE");
     ui.debug(&format!("In-place mode: {}", inplace));
 
-    if config._input_temp_file.is_some() {
+    if config.input_temp_file.is_some() {
         ui.info("Source: <stdin pipe>");
         ui.debug(&format!("Temporary input file: {:?}", config.input_path));
     } else {

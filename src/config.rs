@@ -55,7 +55,7 @@ pub struct Config {
     /// Verbosity level (0 = off, 1 = verbose, 2 = very verbose, 3+ = debug)
     pub verbosity_level: u8,
     /// Temporary file for stdin input handling
-    pub _input_temp_file: Option<NamedTempFile>,
+    pub input_temp_file: Option<NamedTempFile>,
 }
 
 impl Config {
@@ -251,7 +251,7 @@ impl Config {
             quiet,
             verbose,
             verbosity_level,
-            _input_temp_file: input_temp_file,
+            input_temp_file,
         })
     }
 
@@ -344,7 +344,7 @@ impl Config {
             quiet,
             verbose,
             verbosity_level,
-            _input_temp_file: None,
+            input_temp_file: None,
         })
     }
 }

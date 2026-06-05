@@ -42,7 +42,7 @@ pub const DEFAULT_SUBJECT: &str =
 /// a build-time assertion target — if the cert changes, this string and
 /// the test in `tests/integration.rs` must move together.
 pub const DEFAULT_CERT_SHA256: &str =
-    "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF";
+    "E3:06:0F:69:4C:10:0E:7E:CB:F3:4F:CE:7B:16:82:5A:FF:A3:E7:9E:50:80:75:31:DA:97:54:6A:F3:63:11:C8";
 
 /// RSA key size in bits. Matches AOSP `testkey` (2048).
 pub const DEFAULT_KEY_BITS: u32 = 2048;

@@ -1,9 +1,12 @@
 use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
+use x509_parser::parse_x509_certificate;
+use x509_parser::pem::Pem;
 use zip::write::{FileOptions, ZipWriter};
 use zip::CompressionMethod;
 use zipsignerust::{
+    certificate::{DEFAULT_CERT_SHA256, PUBLIC_KEY},
     crypto::CryptoEngine,
     error::SignerError,
     keys::KeyChain,
@@ -393,4 +396,30 @@ fn test_wrap_msg_huge_indent_does_not_panic() {
     let out = wrap_at_cols("hello world", 1000, 20);
     let rejoined: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(rejoined, "hello world");
+}
+
+#[test]
+fn test_default_cert_fingerprint_matches() {
+    // Verify that DEFAULT_CERT_SHA256 matches the actual PUBLIC_KEY fingerprint.
+    // If this test fails, the embedded certificate has changed and
+    // DEFAULT_CERT_SHA256 in src/certificate.rs must be updated.
+    let cert_pem = PUBLIC_KEY;
+    let mut pem_iter = Pem::iter_from_buffer(cert_pem.as_bytes());
+    let pem = pem_iter.next().expect("valid PEM").expect("PEM block");
+    let (_, cert) = parse_x509_certificate(&pem.contents).expect("parse X509");
+    // Compute SHA-256 fingerprint of the certificate DER bytes (RFC 5280)
+    let der = cert.as_raw();
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
+    let fingerprint = digest
+        .as_ref()
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(":");
+    let expected = DEFAULT_CERT_SHA256;
+    assert_eq!(
+        fingerprint, expected,
+        "DEFAULT_CERT_SHA256 mismatch: got {}, expected {}",
+        fingerprint, expected
+    );
 }

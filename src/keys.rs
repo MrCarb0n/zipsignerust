@@ -70,12 +70,12 @@ impl KeyChain {
                 fs::read(p)?
             }
             None => {
-                ui.warn("==================================================================");
+                let tw = ui.term_width();
+                let ruler = "=".repeat(tw.min(50));
+                ui.warn(&ruler);
                 ui.warn("  EMBEDDED DEV KEY IN USE");
-                ui.warn("  Output is NOT authentic. Any signature made with this key can");
-                ui.warn("  be forged by anyone running the same binary. For production use");
-                ui.warn("  a real key with --private-key / --public-key.");
-                ui.warn("==================================================================");
+                ui.warn("  Output is NOT authentic. Supply --private-key for production.");
+                ui.warn(&ruler);
                 crate::certificate::PRIVATE_KEY.as_bytes().to_vec()
             }
         };
@@ -129,8 +129,11 @@ impl KeyChain {
             return *dt;
         }
         // Fallback only if absolutely no certificate date is found.
-        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0)
-            .unwrap_or_else(|_| DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap())
+        // Chain two fixed dates then DateTime::default() so we never panic.
+        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0).unwrap_or_else(|_| {
+            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0)
+                .unwrap_or_else(|_| DateTime::default())
+        })
     }
 
     #[cfg(unix)]

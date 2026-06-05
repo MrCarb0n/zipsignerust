@@ -16,7 +16,7 @@
 
 use crate::{
     crypto::CryptoEngine, error::SignerError, keys::KeyChain, ui::Ui, APP_NAME, BUFFER_SIZE,
-    CERT_PUBLIC_KEY_NAME, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    CERT_DSA_NAME, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 use crc32fast::Hasher as Crc32;
 use filetime::{set_file_times, FileTime};
@@ -421,6 +421,14 @@ impl ArtifactProcessor {
         }
         writer.finish()?;
         ui.debug(&format!("{}: {}", label, output.display()));
+        // NOTE: The output file's filesystem mtime is set to `now()`, while
+        // every ZIP entry timestamp uses the certificate's `notBefore` date
+        // for deterministic builds. This inconsistency is intentional —
+        // the output mtime does not affect signing — but tools that key
+        // off the file mtime will see the wall-clock value. If you need
+        // full reproducibility (e.g. for content-addressed storage),
+        // pass a fixed `--mtime` flag or patch this line to use the
+        // cert's notBefore instead.
         let ft = FileTime::from_system_time(std::time::SystemTime::now());
         set_file_times(output, ft, ft)?;
         ui.debug("Integrity check...");
@@ -429,12 +437,12 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    fn is_sig_file(name: &str) -> bool {
+    pub(crate) fn is_sig_file(name: &str) -> bool {
         name.starts_with("META-INF/")
             && (name == MANIFEST_NAME
                 || name == CERT_SF_NAME
                 || name == CERT_RSA_NAME
-                || name == CERT_PUBLIC_KEY_NAME
+                || name == CERT_DSA_NAME
                 || name.ends_with("/MANIFEST.MF")
                 || name.ends_with(".SF")
                 || name.ends_with(".RSA")
@@ -458,12 +466,7 @@ impl ArtifactProcessor {
     }
 
     pub(crate) fn is_non_wrapping_field(key: &str) -> bool {
-        key == "Name"
-            || key.contains("-Digest")
-            || key.contains("_Digest")
-            || key == "SHA1-Digest-Manifest"
-            || key == "SHA-256-Digest-Manifest"
-            || key == "MD5-Digest-Manifest"
+        key == "Name" || key.contains("-Digest") || key.contains("_Digest")
     }
 
     pub(crate) fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
@@ -477,8 +480,7 @@ impl ArtifactProcessor {
             let line = format!("{}: {}", key, value).into_bytes();
             let mut result = Vec::with_capacity(line.len() + 10);
             let mut cursor = 0;
-            let limit = if cursor == 0 { 72 } else { 71 };
-            let chunk_size = std::cmp::min(line.len(), limit);
+            let chunk_size = std::cmp::min(line.len(), 72);
             result.extend_from_slice(&line[cursor..cursor + chunk_size]);
             result.extend_from_slice(b"\r\n");
             cursor += chunk_size;
@@ -576,28 +578,29 @@ impl ArtifactProcessor {
         }
 
         let mut buf = [0u8; BUFFER_SIZE];
+        let show_progress = ui.is_some() && total_size > 5 * 1024 * 1024;
 
-        if let Some(ui) = ui {
-            if total_size > 5 * 1024 * 1024 {
+        if show_progress {
+            if let Some(ui) = ui {
                 ui.show_detailed_progress_bar(total_size, "Integrity", "bytes");
-                let mut pos = 0u64;
-                for i in 0..archive.len() {
-                    let mut f = archive.by_index(i)?;
-                    Self::verify_entry_crc(&mut f, &mut buf)?;
-                    pos += f.size();
+            }
+        }
+
+        let mut pos = 0u64;
+        for i in 0..archive.len() {
+            let mut f = archive.by_index(i)?;
+            Self::verify_entry_crc(&mut f, &mut buf)?;
+            if show_progress {
+                pos += f.size();
+                if let Some(ui) = ui {
                     ui.update_progress(pos);
                 }
-                ui.finish_progress();
-            } else {
-                for i in 0..archive.len() {
-                    let mut f = archive.by_index(i)?;
-                    Self::verify_entry_crc(&mut f, &mut buf)?;
-                }
             }
-        } else {
-            for i in 0..archive.len() {
-                let mut f = archive.by_index(i)?;
-                Self::verify_entry_crc(&mut f, &mut buf)?;
+        }
+
+        if show_progress {
+            if let Some(ui) = ui {
+                ui.finish_progress();
             }
         }
         Ok(())

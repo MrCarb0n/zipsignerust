@@ -98,6 +98,21 @@ impl Ui {
         Self::new(level >= 1, level >= 2, level >= 3, s, c)
     }
 
+    /// Build a ProgressStyle from a template with a single fallback chain.
+    ///
+    /// Tries the primary template, falls back to a simple bar without
+    /// color/eta on parse error, and finally to a minimal default if that
+    /// also fails. Never panics.
+    fn build_progress_style(primary: &str, fallback: &str) -> ProgressStyle {
+        ProgressStyle::default_bar()
+            .template(primary)
+            .unwrap_or_else(|_| {
+                ProgressStyle::default_bar()
+                    .template(fallback)
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
+            })
+    }
+
     pub fn show_progress_bar(&self, len: u64, msg: &str) {
         let pb = ProgressBar::new(len);
         let tw = self.term_width();
@@ -115,30 +130,12 @@ impl Ui {
             )
         };
 
-        let style = ProgressStyle::default_bar()
-            .template(&template)
-            .unwrap_or_else(|_| {
-                ProgressStyle::default_bar()
-                    .template(&if tw < 60 {
-                        format!(
-                            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
-                            effective_msg
-                        )
-                    } else {
-                        format!(
-                            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}} ({{eta}})",
-                            effective_msg
-                        )
-                    })
-                    .unwrap_or_else(|_| {
-                        ProgressStyle::default_bar()
-                            .template(&format!(
-                                "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
-                                effective_msg
-                            ))
-                            .unwrap()
-                    })
-            })
+        let fallback = format!(
+            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
+            effective_msg
+        );
+
+        let style = Self::build_progress_style(&template, &fallback)
             .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
             .progress_chars("#>-");
 
@@ -247,43 +244,31 @@ impl Ui {
             format!("{{spinner:.green}} {} {{wide_bar:.green/red}} {{pos}}/{{len}} ({{eta}}) [{{percent}}%]", effective_msg)
         };
 
-        let style = ProgressStyle::default_bar()
-            .template(&template)
-            .unwrap_or_else(|_| {
-                let ft = if tw < 60 {
-                    if unit == "bytes" {
-                        format!(
-                            "{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}})",
-                            effective_msg
-                        )
-                    } else {
-                        format!(
-                            "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
-                            effective_msg
-                        )
-                    }
-                } else if unit == "bytes" {
-                    format!(
-                        "{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}}) ({{eta}})",
-                        effective_msg
-                    )
-                } else {
-                    format!(
-                        "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}} ({{eta}})",
-                        effective_msg
-                    )
-                };
-                ProgressStyle::default_bar()
-                    .template(&ft)
-                    .unwrap_or_else(|_| {
-                        ProgressStyle::default_bar()
-                            .template(&format!(
-                                "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
-                                effective_msg
-                            ))
-                            .unwrap()
-                    })
-            })
+        let fallback = if tw < 60 {
+            if unit == "bytes" {
+                format!(
+                    "{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}})",
+                    effective_msg
+                )
+            } else {
+                format!(
+                    "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}}",
+                    effective_msg
+                )
+            }
+        } else if unit == "bytes" {
+            format!(
+                "{{spinner:.green}} {} {{wide_bar:.green}} ({{msg}}) ({{eta}})",
+                effective_msg
+            )
+        } else {
+            format!(
+                "{{spinner:.green}} {} {{wide_bar:.green}} {{pos}}/{{len}} ({{eta}})",
+                effective_msg
+            )
+        };
+
+        let style = Self::build_progress_style(&template, &fallback)
             .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
             .progress_chars("#>-");
 
@@ -628,7 +613,7 @@ impl Ui {
         lines.join("\n")
     }
 
-    fn term_width(&self) -> usize {
+    pub(crate) fn term_width(&self) -> usize {
         if let Some(w) = *self.cached_width.borrow() {
             return w;
         }

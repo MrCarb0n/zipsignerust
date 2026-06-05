@@ -150,17 +150,7 @@ impl ArtifactVerifier {
                 continue;
             }
 
-            if name.starts_with("META-INF/")
-                && (name == crate::MANIFEST_NAME
-                    || name == crate::CERT_SF_NAME
-                    || name == crate::CERT_RSA_NAME
-                    || name == crate::CERT_PUBLIC_KEY_NAME
-                    || name.ends_with("/MANIFEST.MF")
-                    || name.ends_with(".SF")
-                    || name.ends_with(".RSA")
-                    || name.ends_with(".DSA")
-                    || name.ends_with(".EC"))
-            {
+            if crate::processor::ArtifactProcessor::is_sig_file(&name) {
                 continue;
             }
 

@@ -24,7 +24,6 @@
 - **🔌 Pipeline Support:** Full stdin/stdout support for integration in automated workflows.
 - **📦 Integrity Validation:** Built-in ZIP integrity checking with CRC verification.
 - **🔧 Cross-platform:** Works seamlessly across Linux, macOS, and Windows.
-- **⚡ Parallel Processing:** Leverages `rayon` for optimized performance on multi-core systems.
 - **🔐 Security First:** Built with secure-by-default cryptography using the `ring` crate for cryptographic operations.
 - **📊 Progress Tracking:** Visual progress bars for long-running operations with detailed ETA estimation.
 - **🔄 Reproducible Builds:** Deterministic signing ensuring identical outputs for identical inputs.
