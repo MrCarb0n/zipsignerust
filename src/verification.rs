@@ -23,6 +23,18 @@ use crate::{
     CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 
+/// Error message returned when a candidate archive has no RSA signature
+/// entry (i.e. it is not signed or the signature has been stripped).
+pub const ERR_NO_RSA_SIGNATURE: &str = "No RSA Signature file found";
+
+/// Error message returned when a candidate archive has no .SF (signature
+/// file) entry, which is required for a complete signing chain.
+pub const ERR_NO_SIGNATURE_FILE: &str = "No Signature File found";
+
+/// Error message returned when a candidate archive has no MANIFEST.MF
+/// entry, which is the root of the per-entry hash chain.
+pub const ERR_NO_MANIFEST: &str = "No Manifest file found";
+
 /// Verifies signatures on Android archive files
 pub struct ArtifactVerifier;
 
@@ -93,7 +105,7 @@ impl ArtifactVerifier {
         ui.debug("Verifying SF file digest matches PKCS7 messageDigest...");
         let sf_digest = ring::digest::digest(&ring::digest::SHA256, &sf_file_bytes);
         if sf_digest.as_ref() != signer_info.message_digest.as_slice() {
-            return Err(SignerError::Validation(                format!(
+            return Err(SignerError::Validation(format!(
                 "SF file digest mismatch. Computed: {:?}, Expected: {:?}",
                 sf_digest.as_ref(),
                 signer_info.message_digest
@@ -286,11 +298,7 @@ mod tests {
 
     #[test]
     fn test_parse_entries_single() {
-        let lines = vec![
-            "Name: f.txt".into(),
-            "SHA1-Digest: d1".into(),
-            "".into(),
-        ];
+        let lines = vec!["Name: f.txt".into(), "SHA1-Digest: d1".into(), "".into()];
         let map = ArtifactVerifier::parse_entries(&lines);
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("f.txt").unwrap(), "d1");

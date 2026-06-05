@@ -88,6 +88,27 @@ mod tests {
     }
 
     #[test]
+    fn test_display_zip() {
+        let e = SignerError::Zip(zip::result::ZipError::FileNotFound);
+        let msg = format!("{}", e);
+        assert!(msg.starts_with("ZIP Error:"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_display_ring() {
+        let e = SignerError::Ring(ring::error::Unspecified);
+        let msg = format!("{}", e);
+        assert!(msg.starts_with("Cryptography Error:"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_display_pem() {
+        let e = SignerError::Pem(pem::PemError::MalformedFraming);
+        let msg = format!("{}", e);
+        assert!(msg.starts_with("PEM Parsing Error:"), "got: {}", msg);
+    }
+
+    #[test]
     fn test_display_config() {
         let e = SignerError::Config("bad config".into());
         assert_eq!(format!("{}", e), "Configuration Error: bad config");
@@ -111,6 +132,18 @@ mod tests {
         let inner = zip::result::ZipError::FileNotFound;
         let e: SignerError = inner.into();
         assert!(matches!(e, SignerError::Zip(_)));
+    }
+
+    #[test]
+    fn test_from_ring() {
+        let e: SignerError = ring::error::Unspecified.into();
+        assert!(matches!(e, SignerError::Ring(_)));
+    }
+
+    #[test]
+    fn test_from_pem() {
+        let e: SignerError = pem::PemError::MalformedFraming.into();
+        assert!(matches!(e, SignerError::Pem(_)));
     }
 
     #[test]

@@ -14,8 +14,55 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// Default Private Key (PEM format)
-// Embedded for fallback signing capability.
+//! Embedded default development key for ZipSigner Rust.
+//!
+//! This key is structured in the same shape as the test keys shipped with
+//! the Android Open Source Project (AOSP) so that:
+//!
+//!   * any signature made with it is recognisable on sight (the
+//!     certificate subject is `ZipSignerust Dev` and the SHA-256
+//!     fingerprint is published in `DEFAULT_CERT_SHA256` below),
+//!   * the same on-disk layout (PEM private key, PEM certificate) is used
+//!     as production keys, so swapping in a real key is a drop-in change,
+//!   * downstreams that pin against the AOSP test key fingerprint can
+//!     reject a default-keyed signature with a single constant comparison.
+//!
+//! **Do not** use this key to sign production artifacts. The private key
+//! ships in the binary; anyone with the binary can forge a signature. Pass
+//! `--private-key` / `--public-key` to supply your own key.
+
+/// Default certificate subject. Matches the DN layout used by the AOSP
+/// `testkey.x509.pem` (CN, OU, O, L, ST, C, EMAILADDRESS).
+pub const DEFAULT_SUBJECT: &str =
+    "CN=ZipSignerust Dev, OU=Development, O=Open Source, L=Internet, \
+     ST=World, C=XX, EMAILADDRESS=dev@zipsignerust.local";
+
+/// SHA-256 fingerprint of `PUBLIC_KEY`, hex-encoded with `:` separators
+/// (RFC 7469-style). Computed from the PEM below; treat this constant as
+/// a build-time assertion target — if the cert changes, this string and
+/// the test in `tests/integration.rs` must move together.
+pub const DEFAULT_CERT_SHA256: &str =
+    "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF";
+
+/// RSA key size in bits. Matches AOSP `testkey` (2048).
+pub const DEFAULT_KEY_BITS: u32 = 2048;
+
+/// Default certificate validity window, expressed in whole days from the
+/// `notBefore` field. Mirrors AOSP's `~1000 years` convention so
+/// reproducible builds keep a stable signature payload.
+pub const DEFAULT_VALIDITY_DAYS: u32 = 365_250;
+
+/// Default key purpose. Free-form; surfaced at runtime via the loud
+/// warning printed by `KeyChain::load_private_key`.
+pub const DEFAULT_KEY_PURPOSE: &str = "development only — DO NOT ship";
+
+// ----------------------------------------------------------------------------
+// Key material
+// ----------------------------------------------------------------------------
+
+/// Default RSA private key in PKCS#8 PEM form. Loaded when the user does
+/// not pass `--private-key`. Generation procedure: see `key.sh` (which can
+/// also export a freshly-generated key to this file).
 pub const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDgEamm6vrLbsYD
 048sqQsdr4xo2LIUiED88OG7jAQQk6IzNWlNUtV1df33X4sMVyNZZjYHMaz7SVN3
@@ -45,8 +92,8 @@ RLhy5/YbWnB0qrk08hhgTonLkaOqv7eLaEhqfmP3TIIpWLqTAZ4jjLq8zEq7EAVd
 MidBRO4GgCmey1/ozpUafw==
 -----END PRIVATE KEY-----"#;
 
-// Default Public Key / Certificate (PEM format)
-// Embedded for fallback verification.
+/// Default X.509 certificate (RSA public key + subject + validity) in
+/// PEM form. Loaded when the user does not pass `--public-key`.
 pub const PUBLIC_KEY: &str = r#"-----BEGIN CERTIFICATE-----
 MIID5DCCAsygAwIBAgIJAMGfmD2HUg9WMA0GCSqGSIb3DQEBCwUAMIGeMSUwIwYJ
 KoZIhvcNAQkBFhZkZXZAemlwc2lnbmVydXN0LmxvY2FsMQswCQYDVQQGEwJYWDEO

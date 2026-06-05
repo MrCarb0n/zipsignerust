@@ -20,7 +20,7 @@ use zipsignerust::ui::Ui;
 fn main() {
     if let Err(e) = cli::run() {
         let mut ui = Ui::default();
-        ui.enable_colors_if_supported();
+        ui.force_color_on_windows();
         ui.error(&format!("{}", e));
         std::process::exit(1);
     }

@@ -397,7 +397,8 @@ impl ArtifactProcessor {
         digests: &BTreeMap<String, String>,
         timestamp: DateTime,
     ) -> Result<ZipWriter<BufWriter<File>>, SignerError> {
-        let mut writer = ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
+        let mut writer =
+            ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
         let mf = Self::gen_manifest(digests);
         let sf = Self::gen_sf(&mf, digests);
         let rsa = Self::gen_rsa(keys, &sf)?;
@@ -542,10 +543,7 @@ impl ArtifactProcessor {
         Self::verify_zip_integrity_with_ui(path, None)
     }
 
-    fn verify_entry_crc(
-        f: &mut zip::read::ZipFile,
-        buf: &mut [u8],
-    ) -> Result<(), SignerError> {
+    fn verify_entry_crc(f: &mut zip::read::ZipFile, buf: &mut [u8]) -> Result<(), SignerError> {
         let mut hasher = Crc32::new();
         loop {
             let n = f.read(buf)?;
@@ -645,7 +643,9 @@ mod tests {
 
     #[test]
     fn test_is_sig_file_rejects_meta_inf_subdir() {
-        assert!(!ArtifactProcessor::is_sig_file("META-INF/services/somefile"));
+        assert!(!ArtifactProcessor::is_sig_file(
+            "META-INF/services/somefile"
+        ));
     }
 
     #[test]
@@ -657,13 +657,17 @@ mod tests {
     fn test_is_non_wrapping_field_digest() {
         assert!(ArtifactProcessor::is_non_wrapping_field("SHA1-Digest"));
         assert!(ArtifactProcessor::is_non_wrapping_field("SHA-256-Digest"));
-        assert!(ArtifactProcessor::is_non_wrapping_field("SHA1-Digest-Manifest"));
+        assert!(ArtifactProcessor::is_non_wrapping_field(
+            "SHA1-Digest-Manifest"
+        ));
     }
 
     #[test]
     fn test_is_non_wrapping_field_other() {
         assert!(!ArtifactProcessor::is_non_wrapping_field("Created-By"));
-        assert!(!ArtifactProcessor::is_non_wrapping_field("Manifest-Version"));
+        assert!(!ArtifactProcessor::is_non_wrapping_field(
+            "Manifest-Version"
+        ));
     }
 
     #[test]
@@ -686,7 +690,11 @@ mod tests {
         let lines: Vec<&str> = s.split("\r\n").collect();
         for line in &lines[1..] {
             if !line.is_empty() {
-                assert!(line.starts_with(' '), "wrapped line should start with space: {:?}", line);
+                assert!(
+                    line.starts_with(' '),
+                    "wrapped line should start with space: {:?}",
+                    line
+                );
             }
         }
     }

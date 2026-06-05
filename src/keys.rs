@@ -23,7 +23,7 @@ use zip::DateTime;
 
 pub const RSA_SIGNATURE_SCHEME: &dyn signature::RsaEncoding = &signature::RSA_PKCS1_SHA256;
 
-pub const RSA_VERIFICATION_ALGORITHM: &'static dyn signature::VerificationAlgorithm =
+pub const RSA_VERIFICATION_ALGORITHM: &dyn signature::VerificationAlgorithm =
     &signature::RSA_PKCS1_2048_8192_SHA256;
 
 pub struct KeyChain {
@@ -70,7 +70,12 @@ impl KeyChain {
                 fs::read(p)?
             }
             None => {
-                ui.warn("Using dev key. For production: -k flag.");
+                ui.warn("==================================================================");
+                ui.warn("  EMBEDDED DEV KEY IN USE");
+                ui.warn("  Output is NOT authentic. Any signature made with this key can");
+                ui.warn("  be forged by anyone running the same binary. For production use");
+                ui.warn("  a real key with --private-key / --public-key.");
+                ui.warn("==================================================================");
                 crate::certificate::PRIVATE_KEY.as_bytes().to_vec()
             }
         };
@@ -93,7 +98,7 @@ impl KeyChain {
         let content = match path {
             Some(p) => fs::read(p)?,
             None => {
-                ui.warn("Using dev cert. For production: -p flag.");
+                ui.warn("Using embedded dev certificate (see DEV KEY warning above).");
                 crate::certificate::PUBLIC_KEY.as_bytes().to_vec()
             }
         };
@@ -124,9 +129,8 @@ impl KeyChain {
             return *dt;
         }
         // Fallback only if absolutely no certificate date is found.
-        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0).unwrap_or_else(|_| {
-            DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap()
-        })
+        DateTime::from_date_and_time(2008, 1, 1, 0, 0, 0)
+            .unwrap_or_else(|_| DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap())
     }
 
     #[cfg(unix)]

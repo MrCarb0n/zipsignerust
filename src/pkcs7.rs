@@ -82,7 +82,9 @@ fn find_der_element(data: &[u8], target_tag: u8) -> Result<(Vec<u8>, &[u8]), Sig
         }
         remaining = rest;
     }
-    Err(SignerError::Validation(format!("DER tag 0x{target_tag:02X} not found")))
+    Err(SignerError::Validation(format!(
+        "DER tag 0x{target_tag:02X} not found"
+    )))
 }
 
 /// PKCS7 signer info extracted from a signature blob.
@@ -140,13 +142,17 @@ fn extract_message_digest(auth_attrs_raw: &[u8]) -> Result<Vec<u8>, SignerError>
         }
         cursor = rest;
     }
-    Err(SignerError::Validation("messageDigest not found in authenticated attributes".into()))
+    Err(SignerError::Validation(
+        "messageDigest not found in authenticated attributes".into(),
+    ))
 }
 
 fn try_extract_digest_from_sequence(seq_content: &[u8]) -> Result<Vec<u8>, SignerError> {
     let (tag, oid_value, rest) = parse_der_tlv(seq_content)?;
     if tag != 0x06 {
-        return Err(SignerError::Validation("Expected OID in attribute SEQUENCE".into()));
+        return Err(SignerError::Validation(
+            "Expected OID in attribute SEQUENCE".into(),
+        ));
     }
     let msg_digest_oid = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x04];
     if oid_value != msg_digest_oid {
@@ -237,8 +243,9 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     let iasn = ASN1Block::Sequence(
         0,
         vec![
-            issuer_blocks.into_iter().next()
-                .ok_or_else(|| SignerError::Config("No issuer block found in certificate".to_string()))?,
+            issuer_blocks.into_iter().next().ok_or_else(|| {
+                SignerError::Config("No issuer block found in certificate".to_string())
+            })?,
             ASN1Block::Integer(0, serial_bigint),
         ],
     );
@@ -256,7 +263,12 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
         0,
         vec![ASN1Block::ObjectIdentifier(0, oid_rsa), ASN1Block::Null(0)],
     ))
-    .map_err(|e| SignerError::Config(format!("ASN1 encoding error for encryption algorithm: {}", e)))?;
+    .map_err(|e| {
+        SignerError::Config(format!(
+            "ASN1 encoding error for encryption algorithm: {}",
+            e
+        ))
+    })?;
     let si_ed = simple_asn1::to_der(&ASN1Block::OctetString(0, signature_bytes))
         .map_err(|e| SignerError::Config(format!("ASN1 encoding error for signature: {}", e)))?;
 
@@ -269,8 +281,12 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     si_content.extend(si_ed);
     let signer_info = wrap_tag(0x30, &si_content);
 
-    let sd_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1)))
-        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for signed data version: {}", e)))?;
+    let sd_ver = simple_asn1::to_der(&ASN1Block::Integer(0, BigInt::from(1))).map_err(|e| {
+        SignerError::Config(format!(
+            "ASN1 encoding error for signed data version: {}",
+            e
+        ))
+    })?;
     let da_set = ASN1Block::Set(
         0,
         vec![ASN1Block::Sequence(
@@ -281,8 +297,12 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
             ],
         )],
     );
-    let sd_da = simple_asn1::to_der(&da_set)
-        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for digest algorithm set: {}", e)))?;
+    let sd_da = simple_asn1::to_der(&da_set).map_err(|e| {
+        SignerError::Config(format!(
+            "ASN1 encoding error for digest algorithm set: {}",
+            e
+        ))
+    })?;
     let eci = ASN1Block::Sequence(0, vec![ASN1Block::ObjectIdentifier(0, oid_data)]);
     let sd_eci = simple_asn1::to_der(&eci)
         .map_err(|e| SignerError::Config(format!("ASN1 encoding error for content info: {}", e)))?;
@@ -297,8 +317,10 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
     sd_content.extend(sd_si);
     let signed_data = wrap_tag(0x30, &sd_content);
 
-    let ci_oid = simple_asn1::to_der(&ASN1Block::ObjectIdentifier(0, oid_signed_data))
-        .map_err(|e| SignerError::Config(format!("ASN1 encoding error for content identifier: {}", e)))?;
+    let ci_oid =
+        simple_asn1::to_der(&ASN1Block::ObjectIdentifier(0, oid_signed_data)).map_err(|e| {
+            SignerError::Config(format!("ASN1 encoding error for content identifier: {}", e))
+        })?;
     let ci_content = wrap_tag(0xA0, &signed_data);
 
     let mut ci_final = Vec::new();
