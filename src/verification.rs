@@ -27,14 +27,6 @@ use crate::{
 /// entry (i.e. it is not signed or the signature has been stripped).
 pub const ERR_NO_RSA_SIGNATURE: &str = "No RSA Signature file found";
 
-/// Error message returned when a candidate archive has no .SF (signature
-/// file) entry, which is required for a complete signing chain.
-pub const ERR_NO_SIGNATURE_FILE: &str = "No Signature File found";
-
-/// Error message returned when a candidate archive has no MANIFEST.MF
-/// entry, which is the root of the per-entry hash chain.
-pub const ERR_NO_MANIFEST: &str = "No Manifest file found";
-
 /// Verifies signatures on Android archive files
 pub struct ArtifactVerifier;
 

@@ -23,44 +23,14 @@ use crate::{
     *,
 };
 use clap::{Arg, ArgAction, Command};
-use colored::Colorize;
 use std::io;
 use tempfile::NamedTempFile;
 
 pub fn run() -> Result<(), SignerError> {
-    let binary_name = std::env::args()
-        .next()
-        .and_then(|p| {
-            std::path::Path::new(&p)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| APP_BIN_NAME.to_string());
-
-    // Check if help is requested before building the full command
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() == 1 || (args.len() >= 2 && (args[1] == "-h" || args[1] == "--help")) {
-        print_formatted_help()?;
-        return Ok(());
-    }
-
-    // Check if a subcommand help is requested
-    if args.len() >= 3 && (args[2] == "-h" || args[2] == "--help") {
-        match args[1].as_str() {
-            "sign" => {
-                print_sign_help()?;
-                return Ok(());
-            }
-            "verify" => {
-                print_verify_help()?;
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
+    // NOTE: `-h/--help` is handled by clap itself (`arg_required_else_help`
+    // below prints help when no args are given). No hand-rolled help here.
     let matches = Command::new(APP_NAME)
-        .bin_name(binary_name)
+        .bin_name(binary_name())
         .version(APP_VERSION)
         .author(APP_AUTHOR)
         .about(APP_ABOUT)
@@ -368,7 +338,7 @@ fn run_sign(
         }
         Err(e) => {
             if inplace {
-                restore_backup(&working_input, &config.input_path, &e, ui)?;
+                return Err(restore_backup(working_input, &config.input_path, e, ui));
             }
             Err(e)
         }
@@ -428,36 +398,25 @@ fn finish_sign(
 }
 
 fn restore_backup(
-    working_input: &std::path::Path,
+    working_input: std::path::PathBuf,
     original: &std::path::Path,
-    signing_err: &SignerError,
+    signing_err: SignerError,
     ui: &Ui,
-) -> Result<(), SignerError> {
-    match rename_or_copy(working_input, original) {
+) -> SignerError {
+    match rename_or_copy(&working_input, original) {
         Ok(_) => {
             ui.error("Original file restored from backup.");
-            Err(clone_signer_error(signing_err))
+            signing_err
         }
         Err(restore_err) => {
             ui.error(&format!("CRITICAL: Backup restore failed: {}", restore_err));
-            Err(SignerError::Config(format!(
+            SignerError::Config(format!(
                 "Signing failed AND restore failed. Error: {}. Restore: {}. Backup: {}",
                 signing_err,
                 restore_err,
                 working_input.display()
-            )))
+            ))
         }
-    }
-}
-
-fn clone_signer_error(e: &SignerError) -> SignerError {
-    match e {
-        SignerError::Io(io) => SignerError::Io(std::io::Error::new(io.kind(), io.to_string())),
-        SignerError::Zip(_) => SignerError::Validation(e.to_string()),
-        SignerError::Ring(_) => SignerError::Validation(e.to_string()),
-        SignerError::Pem(_) => SignerError::Validation(e.to_string()),
-        SignerError::Validation(s) => SignerError::Validation(s.clone()),
-        SignerError::Config(s) => SignerError::Config(s.clone()),
     }
 }
 
@@ -469,132 +428,10 @@ fn key_type_label(config: &Config) -> &'static str {
     }
 }
 
-/// Print help with UI formatting for consistent indentation
-fn print_formatted_help() -> Result<(), SignerError> {
-    let ui = help_ui();
-    ui.info("High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.");
-    print_help(
-        &ui,
-        "[OPTIONS] [COMMAND]",
-        &[
-            (
-                "Commands",
-                &[
-                    ("sign", "Sign a ZIP archive"),
-                    ("verify", "Verify the signature of an archive"),
-                    (
-                        "help",
-                        "Print this message or the help of the given subcommand(s)",
-                    ),
-                ],
-            ),
-            (
-                "Options",
-                &[
-                    (
-                        "-v, --verbose",
-                        "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)",
-                    ),
-                    ("-q, --quiet", "Suppress all output except errors"),
-                    ("-V, --version", "Print version information"),
-                    ("-h, --help", "Print help"),
-                ],
-            ),
-        ],
-    );
-    Ok(())
-}
-
-fn print_sign_help() -> Result<(), SignerError> {
-    let ui = help_ui();
-    ui.info("Sign a ZIP archive");
-    print_help(
-        &ui,
-        "sign [OPTIONS] <INPUT> [OUTPUT]",
-        &[
-            (
-                "Arguments",
-                &[
-                    ("<INPUT>", "Path to the input ZIP file (- for stdin)"),
-                    (
-                        "[OUTPUT]",
-                        "Path to save the signed ZIP (- for stdout, optional)",
-                    ),
-                ],
-            ),
-            (
-                "Options",
-                &[
-                    ("-k KEY", "Custom private key (PEM/PK8)"),
-                    ("-p CERT", "Custom public key/cert (PEM/X509)"),
-                    ("-f", "Force overwrite if output exists"),
-                    ("-i", "Sign input file directly (creates backup)"),
-                    (
-                        "-v",
-                        "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)",
-                    ),
-                    ("-q", "Suppress all output except errors"),
-                    ("-h", "Print help"),
-                ],
-            ),
-        ],
-    );
-    Ok(())
-}
-
-fn print_verify_help() -> Result<(), SignerError> {
-    let ui = help_ui();
-    ui.info("Verify the signature of an archive");
-    print_help(
-        &ui,
-        "verify [OPTIONS] <INPUT>",
-        &[
-            (
-                "Arguments",
-                &[("<INPUT>", "Path to the archive to verify")],
-            ),
-            (
-                "Options",
-                &[
-                    ("-p CERT", "Custom public key/cert (PEM) to verify against"),
-                    (
-                        "-v",
-                        "Set verbosity level (-v for verbose, -vv for more verbose, -vvv for debug)",
-                    ),
-                    ("-q", "Suppress all output except errors"),
-                    ("-h", "Print help"),
-                ],
-            ),
-        ],
-    );
-    Ok(())
-}
-
-fn help_ui() -> Ui {
-    let mut ui = Ui::default();
-    ui.force_color_on_windows();
-    ui
-}
-
 fn binary_name() -> String {
     std::env::args()
         .next()
         .unwrap_or_else(|| APP_BIN_NAME.to_string())
-}
-
-fn print_help(ui: &Ui, usage_signature: &str, sections: &[(&str, &[(&str, &str)])]) {
-    eprintln!();
-    if ui.supports_color() {
-        eprintln!("{}", "Usage:".bold().blue());
-        eprintln!("  {} {}", binary_name().cyan(), usage_signature.cyan());
-    } else {
-        eprintln!("Usage:");
-        eprintln!("  {} {}", binary_name(), usage_signature);
-    }
-    eprintln!();
-    for (title, items) in sections {
-        ui.print_help_section(title, items);
-    }
 }
 
 /// Append a `.bak` suffix to a path, preserving the original extension.
@@ -631,17 +468,8 @@ fn rename_or_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resu
     }
 }
 
-#[cfg(unix)]
 fn is_cross_device(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(18)
-}
-
-#[cfg(windows)]
-fn is_cross_device(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(17)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn is_cross_device(_e: &std::io::Error) -> bool {
-    false
+    // ponytail: std maps EXDEV/ERROR_NOT_SAME_DEVICE to CrossesDevices; raw 18/17 kept for old toolchains
+    e.kind() == std::io::ErrorKind::CrossesDevices
+        || matches!(e.raw_os_error(), Some(18) | Some(17))
 }

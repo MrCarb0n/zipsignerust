@@ -15,10 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{error::SignerError, ui::Ui};
-use ::pem as pem_crate;
 use ring::signature::{self, RsaKeyPair, UnparsedPublicKey};
 use std::{fs, path::Path};
-use x509_parser::prelude::*;
+use x509_parser::certificate::X509Certificate;
+use x509_parser::prelude::{ASN1Time, FromDer};
 use zip::DateTime;
 
 pub const RSA_SIGNATURE_SCHEME: &dyn signature::RsaEncoding = &signature::RSA_PKCS1_SHA256;
@@ -80,7 +80,7 @@ impl KeyChain {
             }
         };
 
-        let key_pair = match pem_crate::parse(&content) {
+        let key_pair = match ::pem::parse(&content) {
             Ok(pem) => RsaKeyPair::from_pkcs8(pem.contents())
                 .map_err(|e| SignerError::Config(format!("Invalid PEM private key: {}", e)))?,
             Err(_) => {
@@ -103,7 +103,7 @@ impl KeyChain {
             }
         };
 
-        let cert_der = match pem_crate::parse(&content) {
+        let cert_der = match ::pem::parse(&content) {
             Ok(pem) => pem.contents().to_vec(),
             Err(_) => {
                 ui.debug("Input is not PEM, attempting to parse as binary X.509 DER...");

@@ -113,8 +113,23 @@ impl Ui {
             })
     }
 
-    pub fn show_progress_bar(&self, len: u64, msg: &str) {
+    fn start_progress(&self, len: u64, template: &str, fallback: &str, bytes: bool) {
         let pb = ProgressBar::new(len);
+        let style = Self::build_progress_style(template, fallback)
+            .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
+            .progress_chars("#>-");
+        pb.set_style(style);
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        if bytes {
+            pb.set_message(Self::format_bytes(pb.position()));
+        }
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.is_bytes_progress = bytes;
+            inner.progress_bar = Some(pb);
+        }
+    }
+
+    pub fn show_progress_bar(&self, len: u64, msg: &str) {
         let tw = self.term_width();
         let effective_msg = Self::truncate_msg(msg, tw);
 
@@ -135,15 +150,7 @@ impl Ui {
             effective_msg
         );
 
-        let style = Self::build_progress_style(&template, &fallback)
-            .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
-            .progress_chars("#>-");
-
-        pb.set_style(style);
-        pb.enable_steady_tick(std::time::Duration::from_millis(120));
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.progress_bar = Some(pb);
-        }
+        self.start_progress(len, &template, &fallback, false);
     }
 
     pub fn record_temp_file(&self, path: &std::path::Path) {
@@ -207,7 +214,6 @@ impl Ui {
     }
 
     pub fn show_detailed_progress_bar(&self, len: u64, msg: &str, unit: &str) {
-        let pb = ProgressBar::new(len);
         let tw = self.term_width();
         let effective_msg = Self::truncate_msg(msg, tw);
 
@@ -268,21 +274,7 @@ impl Ui {
             )
         };
 
-        let style = Self::build_progress_style(&template, &fallback)
-            .tick_strings(&["[|]", "[/]", "[-]", "[\\]"])
-            .progress_chars("#>-");
-
-        pb.set_style(style);
-        pb.enable_steady_tick(std::time::Duration::from_millis(120));
-
-        if unit == "bytes" {
-            pb.set_message(Self::format_bytes(pb.position()));
-        }
-
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.is_bytes_progress = unit == "bytes";
-            inner.progress_bar = Some(pb);
-        }
+        self.start_progress(len, &template, &fallback, unit == "bytes");
     }
 
     pub fn update_progress(&self, pos: u64) {
@@ -487,46 +479,6 @@ impl Ui {
     }
     pub fn error(&self, msg: &str) {
         self.paint("[x]", msg, "31", true, false);
-    }
-
-    pub fn print_section_header(&self, title: &str) {
-        if self.supports_color() {
-            eprintln!("{}", format!("{}:", title).green().bold());
-        } else {
-            eprintln!("{}:", title);
-        }
-    }
-
-    pub fn print_help_item(&self, command: &str, description: &str) {
-        const COLUMN_WIDTH: usize = 18;
-        let padded_command = format!("  {:<width$}", command, width = COLUMN_WIDTH - 2);
-        let wrapped_description = self.wrap_msg(description, COLUMN_WIDTH);
-        let lines: Vec<&str> = wrapped_description.split('\n').collect();
-
-        for (i, line) in lines.iter().enumerate() {
-            if i == 0 {
-                if self.supports_color() {
-                    eprintln!("{}{}", padded_command, line.normal());
-                } else {
-                    eprintln!("{}{}", padded_command, line);
-                }
-            } else {
-                let indent = " ".repeat(COLUMN_WIDTH);
-                if self.supports_color() {
-                    eprintln!("{}{}", indent, line.normal());
-                } else {
-                    eprintln!("{}{}", indent, line);
-                }
-            }
-        }
-    }
-
-    pub fn print_help_section(&self, title: &str, items: &[(&str, &str)]) {
-        self.print_section_header(title);
-        for (command, description) in items {
-            self.print_help_item(command, description);
-        }
-        eprintln!();
     }
 
     pub fn print_summary(&self, title: &str, fields: &[SummaryField]) {

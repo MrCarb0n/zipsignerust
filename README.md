@@ -13,7 +13,7 @@
 
 ## 🚀 Key Features
 
-- **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety with optimized allocation using `mimalloc`.
+- **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety.
 - **🔒 Deterministic timestamps:** Uses the certificate's creation date for all ZIP entries (reproducible builds).
 - **🔍 Recursive Signing:** Automatically detects and signs nested `.zip` files inside archives.
 - **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-1/SHA-256) for signature generation and verification.

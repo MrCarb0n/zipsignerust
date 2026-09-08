@@ -19,8 +19,6 @@ use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
 use ring::digest;
 use std::io::Read;
 
-thread_local! { static STREAM_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; BUFFER_SIZE]); }
-
 pub struct CryptoEngine;
 
 impl CryptoEngine {
@@ -59,33 +57,31 @@ impl CryptoEngine {
             }
         }
 
-        STREAM_BUF.with(|local_buf| {
-            let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
-            let mut buf = local_buf.borrow_mut();
-            let mut processed = 0u64;
-            loop {
-                let count = reader.read(&mut buf)?;
-                if count == 0 {
-                    break;
-                }
-                ctx.update(&buf[..count]);
-                processed += count as u64;
-
-                if let Some(ui) = ui {
-                    if ui.debug && processed % (BUFFER_SIZE as u64 * 10) == 0 {
-                        ui.trace(&format!("SHA1: {} bytes", processed));
-                    }
-                }
+        let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
+        let mut buf = [0u8; BUFFER_SIZE];
+        let mut processed = 0u64;
+        loop {
+            let count = reader.read(&mut buf)?;
+            if count == 0 {
+                break;
             }
+            ctx.update(&buf[..count]);
+            processed += count as u64;
 
             if let Some(ui) = ui {
-                if ui.very_verbose {
-                    ui.debug(&format!("SHA1 complete: {} bytes", processed));
+                if ui.debug && processed % (BUFFER_SIZE as u64 * 10) == 0 {
+                    ui.trace(&format!("SHA1: {} bytes", processed));
                 }
             }
+        }
 
-            Ok(base64_engine.encode(ctx.finish().as_ref()))
-        })
+        if let Some(ui) = ui {
+            if ui.very_verbose {
+                ui.debug(&format!("SHA1 complete: {} bytes", processed));
+            }
+        }
+
+        Ok(base64_engine.encode(ctx.finish().as_ref()))
     }
 }
 
