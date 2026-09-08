@@ -26,15 +26,6 @@ impl CryptoEngine {
         base64_engine.encode(digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, data).as_ref())
     }
 
-    pub fn compute_sha1_with_ui(data: &[u8], ui: Option<&Ui>) -> String {
-        if let Some(ui) = ui {
-            if ui.debug {
-                ui.debug(&format!("SHA1: {} bytes", data.len()));
-            }
-        }
-        Self::compute_sha1(data)
-    }
-
     pub fn compute_stream_sha1<R: Read>(reader: &mut R) -> Result<String, SignerError> {
         Self::compute_stream_sha1_with_ui(reader, None, None)
     }

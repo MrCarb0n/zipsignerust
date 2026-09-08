@@ -134,7 +134,6 @@ impl ArtifactVerifier {
         let sf_entries = Self::parse_entries(&unfolded_sf_lines);
 
         let mut file_map = std::collections::BTreeMap::new();
-        let mut buf = [0u8; crate::BUFFER_SIZE];
         for i in 0..archive.len() {
             let mut f = archive.by_index(i)?;
             let name = f.name().to_string();
@@ -146,15 +145,8 @@ impl ArtifactVerifier {
                 continue;
             }
 
-            let mut hasher_input = Vec::new();
-            loop {
-                let n = f.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher_input.extend_from_slice(&buf[..n]);
-            }
-            let digest = CryptoEngine::compute_sha1(&hasher_input);
+            // ponytail: stream straight into the digest; no whole-file buffer
+            let digest = CryptoEngine::compute_stream_sha1(&mut f)?;
             file_map.insert(name, digest);
         }
 
