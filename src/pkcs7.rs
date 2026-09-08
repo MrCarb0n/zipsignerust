@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{error::SignerError, keys::KeyChain};
-use simple_asn1::{ASN1Block, BigInt};
+use simple_asn1::{from_der, ASN1Block, BigInt, OID};
 use x509_parser::prelude::*;
 
 fn encode_len(sz: usize) -> Vec<u8> {
@@ -42,49 +42,51 @@ fn wrap_tag(tag: u8, content: &[u8]) -> Vec<u8> {
     res
 }
 
-fn parse_der_tlv(data: &[u8]) -> Result<(u8, Vec<u8>, &[u8]), SignerError> {
-    if data.is_empty() {
-        return Err(SignerError::Validation("Empty DER data".into()));
+fn seq_items<'b>(block: &'b ASN1Block, what: &str) -> Result<&'b [ASN1Block], SignerError> {
+    match block {
+        ASN1Block::Sequence(_, v) | ASN1Block::Set(_, v) => Ok(v),
+        _ => Err(SignerError::Validation(format!(
+            "Expected SEQUENCE/SET for {}",
+            what
+        ))),
     }
-    let tag = data[0];
-    let (len, after_len) = if data[1] < 0x80 {
-        (data[1] as usize, &data[2..])
-    } else {
-        let num_bytes = (data[1] & 0x7F) as usize;
-        if data.len() < 2 + num_bytes {
-            return Err(SignerError::Validation("Truncated DER length".into()));
-        }
-        let mut l = 0usize;
-        for i in 0..num_bytes {
-            l = (l << 8) | data[2 + i] as usize;
-        }
-        (l, &data[2 + num_bytes..])
-    };
-    if after_len.len() < len {
-        return Err(SignerError::Validation("Truncated DER value".into()));
-    }
-    let value = after_len[..len].to_vec();
-    let rest = &after_len[len..];
-    Ok((tag, value, rest))
 }
 
-fn skip_der_element(data: &[u8]) -> Result<&[u8], SignerError> {
-    let (_, _, rest) = parse_der_tlv(data)?;
-    Ok(rest)
+/// Attribute items plus the re-tagged `SET OF` encoding the signature covers.
+/// The `[0]` slot holds raw SET content (Unknown) for 2+ attributes, or a
+/// single Attribute (Explicit) — both fold to the same pair.
+fn attrs_set(slot: &ASN1Block) -> Result<(Vec<ASN1Block>, Vec<u8>), SignerError> {
+    let asn1_err = |e| SignerError::Validation(format!("PKCS7 parse error: {}", e));
+    match slot {
+        ASN1Block::Unknown(_, _, _, _, bytes) => {
+            let items = from_der(bytes).map_err(asn1_err)?;
+            Ok((items, wrap_tag(0x31, bytes)))
+        }
+        ASN1Block::Explicit(_, _, _, inner) => {
+            let inner_der = simple_asn1::to_der(inner)
+                .map_err(|e| SignerError::Validation(format!("PKCS7 encode error: {}", e)))?;
+            Ok((vec![(**inner).clone()], wrap_tag(0x31, &inner_der)))
+        }
+        _ => Err(SignerError::Validation(
+            "Authenticated attributes not found".into(),
+        )),
+    }
 }
 
-fn find_der_element(data: &[u8], target_tag: u8) -> Result<(Vec<u8>, &[u8]), SignerError> {
-    let mut remaining = data;
-    while !remaining.is_empty() {
-        let (tag, value, rest) = parse_der_tlv(remaining)?;
-        if tag == target_tag {
-            return Ok((value, rest));
-        }
-        remaining = rest;
+/// messageDigest bytes from a single Attribute, if its OID matches.
+fn attr_digest(attr: &ASN1Block, md_oid: &OID) -> Option<Vec<u8>> {
+    match attr {
+        ASN1Block::Sequence(_, items) => match items.as_slice() {
+            [ASN1Block::ObjectIdentifier(_, o), ASN1Block::Set(_, vals)] if o == md_oid => {
+                match vals.as_slice() {
+                    [ASN1Block::OctetString(_, d)] => Some(d.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
     }
-    Err(SignerError::Validation(format!(
-        "DER tag 0x{target_tag:02X} not found"
-    )))
 }
 
 /// PKCS7 signer info extracted from a signature blob.
@@ -96,77 +98,58 @@ pub struct SignerInfo {
 
 /// Extract PKCS7 signer info: signature_bytes, auth_attrs_der_with_set_tag, expected_sf_digest
 pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> {
-    let (_, ci_content, _) = parse_der_tlv(pkcs7_der)?;
-    let (_oid, rest) = find_der_element(&ci_content, 0x06)?;
-    let (sd_raw, _) = find_der_element(rest, 0xA0)?;
-    let (_, sd_content, _) = parse_der_tlv(&sd_raw)?;
-
-    let mut cursor = &sd_content[..];
-    cursor = skip_der_element(cursor)?;
-    cursor = skip_der_element(cursor)?;
-    cursor = skip_der_element(cursor)?;
-    if cursor.first() == Some(&0xA0) {
-        cursor = skip_der_element(cursor)?;
-    }
-    let (si_set, _) = find_der_element(cursor, 0x31)?;
-    let (_, si_content, _) = parse_der_tlv(&si_set)?;
-
-    cursor = &si_content[..];
-    cursor = skip_der_element(cursor)?;
-    cursor = skip_der_element(cursor)?;
-    cursor = skip_der_element(cursor)?;
-    let (auth_attrs_raw, rest) = find_der_element(cursor, 0xA0)?;
-    cursor = rest;
-    cursor = skip_der_element(cursor)?;
-    let (sig_octet, _) = find_der_element(cursor, 0x04)?;
-
-    let auth_attrs_with_set = wrap_tag(0x31, &auth_attrs_raw);
-
-    let digest = extract_message_digest(&auth_attrs_raw)?;
-
+    let asn1_err = |e| SignerError::Validation(format!("PKCS7 parse error: {}", e));
+    let top = from_der(pkcs7_der).map_err(asn1_err)?;
+    let ci = seq_items(
+        top.first()
+            .ok_or_else(|| SignerError::Validation("Empty PKCS7".into()))?,
+        "ContentInfo",
+    )?;
+    // ContentInfo = SEQUENCE { OID, [0] EXPLICIT SignedData }.
+    let sd_seq = match ci.iter().find(|b| matches!(b, ASN1Block::Explicit(..))) {
+        Some(ASN1Block::Explicit(_, _, _, inner)) => seq_items(inner.as_ref(), "SignedData")?,
+        _ => return Err(SignerError::Validation("SignedData not found".into())),
+    };
+    // SignedData holds two SETs (digestAlgorithms, signerInfos): want the last.
+    let si_items = sd_seq
+        .iter()
+        .filter_map(|b| match b {
+            ASN1Block::Set(_, v) => Some(v.as_slice()),
+            _ => None,
+        })
+        .last()
+        .ok_or_else(|| SignerError::Validation("SignerInfos not found".into()))?;
+    let si = seq_items(
+        si_items
+            .first()
+            .ok_or_else(|| SignerError::Validation("Empty SignerInfos".into()))?,
+        "SignerInfo",
+    )?;
+    // Authenticated attributes live in the [0] slot.
+    let attrs_slot = si
+        .iter()
+        .find(|b| matches!(b, ASN1Block::Explicit(..) | ASN1Block::Unknown(..)))
+        .ok_or_else(|| SignerError::Validation("Authenticated attributes not found".into()))?;
+    let (attr_items, auth_attrs_der) = attrs_set(attrs_slot)?;
+    let signature = si
+        .iter()
+        .find_map(|b| match b {
+            ASN1Block::OctetString(_, sig) => Some(sig.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| SignerError::Validation("Signature not found".into()))?;
+    let md_oid = simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4);
+    let digest = attr_items
+        .iter()
+        .find_map(|a| attr_digest(a, &md_oid))
+        .ok_or_else(|| {
+            SignerError::Validation("messageDigest not found in authenticated attributes".into())
+        })?;
     Ok(SignerInfo {
-        signature: sig_octet,
-        auth_attrs_der: auth_attrs_with_set,
+        signature,
+        auth_attrs_der,
         message_digest: digest,
     })
-}
-
-fn extract_message_digest(auth_attrs_raw: &[u8]) -> Result<Vec<u8>, SignerError> {
-    let mut cursor = auth_attrs_raw;
-    while !cursor.is_empty() {
-        let (tag, value, rest) = parse_der_tlv(cursor)?;
-        if tag == 0x30 {
-            if let Ok(digest) = try_extract_digest_from_sequence(&value) {
-                return Ok(digest);
-            }
-        }
-        cursor = rest;
-    }
-    Err(SignerError::Validation(
-        "messageDigest not found in authenticated attributes".into(),
-    ))
-}
-
-fn try_extract_digest_from_sequence(seq_content: &[u8]) -> Result<Vec<u8>, SignerError> {
-    let (tag, oid_value, rest) = parse_der_tlv(seq_content)?;
-    if tag != 0x06 {
-        return Err(SignerError::Validation(
-            "Expected OID in attribute SEQUENCE".into(),
-        ));
-    }
-    let msg_digest_oid = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x04];
-    if oid_value != msg_digest_oid {
-        return Err(SignerError::Validation("Not messageDigest OID".into()));
-    }
-    let (set_tag, set_content, _) = parse_der_tlv(rest)?;
-    if set_tag != 0x31 {
-        return Err(SignerError::Validation("Expected SET after OID".into()));
-    }
-    let (octet_tag, octet_value, _) = parse_der_tlv(&set_content)?;
-    if octet_tag != 0x04 {
-        return Err(SignerError::Validation("Expected OCTET STRING".into()));
-    }
-    Ok(octet_value)
 }
 
 pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {

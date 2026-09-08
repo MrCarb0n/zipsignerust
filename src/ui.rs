@@ -17,7 +17,6 @@
 use crate::{APP_AUTHOR, APP_NAME, APP_VERSION};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 /// Manifest field names that must not be wrapped per JAR spec.
@@ -51,7 +50,6 @@ impl SummaryField {
 struct UiInner {
     progress_bar: Option<ProgressBar>,
     is_bytes_progress: bool,
-    temp_files: Vec<std::path::PathBuf>,
 }
 
 pub struct Ui {
@@ -61,7 +59,6 @@ pub struct Ui {
     silent: bool,
     colors: bool,
     inner: Arc<Mutex<UiInner>>,
-    cached_width: RefCell<Option<usize>>,
 }
 
 impl Default for Ui {
@@ -88,9 +85,7 @@ impl Ui {
             inner: Arc::new(Mutex::new(UiInner {
                 progress_bar: None,
                 is_bytes_progress: false,
-                temp_files: Vec::new(),
             })),
-            cached_width: RefCell::new(None),
         }
     }
 
@@ -151,28 +146,6 @@ impl Ui {
         );
 
         self.start_progress(len, &template, &fallback, false);
-    }
-
-    pub fn record_temp_file(&self, path: &std::path::Path) {
-        if self.debug {
-            if let Ok(mut inner) = self.inner.lock() {
-                inner.temp_files.push(path.to_path_buf());
-                self.debug(&format!("Recorded: {:?}", path));
-            }
-        }
-    }
-
-    pub fn print_temp_files(&self) {
-        if self.debug {
-            if let Ok(inner) = self.inner.lock() {
-                if !inner.temp_files.is_empty() {
-                    self.info(&format!("Files: {} item(s)", inner.temp_files.len()));
-                    for path in inner.temp_files.iter() {
-                        self.debug(&format!("  - {:?}", path));
-                    }
-                }
-            }
-        }
     }
 
     fn truncate_msg(msg: &str, tw: usize) -> String {
@@ -566,29 +539,13 @@ impl Ui {
     }
 
     pub(crate) fn term_width(&self) -> usize {
-        if let Some(w) = *self.cached_width.borrow() {
-            return w;
-        }
-        let w = std::env::var("COLUMNS")
+        // ponytail: COLUMNS override, else terminal probe, else 80. No
+        // subprocess fallback, no cache (width is read once per message).
+        std::env::var("COLUMNS")
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| terminal_size::terminal_size().map(|(w, _)| w.0 as usize))
-            .or_else(|| {
-                #[cfg(unix)]
-                if let Ok(output) = std::process::Command::new("tput").arg("cols").output() {
-                    if !output.stdout.is_empty() {
-                        if let Ok(cols_str) = String::from_utf8(output.stdout) {
-                            if let Ok(width) = cols_str.trim().parse::<usize>() {
-                                return Some(width);
-                            }
-                        }
-                    }
-                }
-                None
-            })
-            .unwrap_or(80);
-        *self.cached_width.borrow_mut() = Some(w);
-        w
+            .unwrap_or(80)
     }
 }
 

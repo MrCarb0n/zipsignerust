@@ -19,7 +19,6 @@ use crate::{
     CERT_DSA_NAME, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 use crc32fast::Hasher as Crc32;
-use filetime::{set_file_times, FileTime};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -115,13 +114,10 @@ impl ArtifactProcessor {
             if name.ends_with(".zip") {
                 ui.debug(&format!("Nested: {}", name));
                 let tmpdir = tempdir()?;
-                ui.record_temp_file(tmpdir.path());
                 let (src, signed) = (
                     tmpdir.path().join("nested-src.zip"),
                     tmpdir.path().join("nested-signed.zip"),
                 );
-                ui.record_temp_file(&src);
-                ui.record_temp_file(&signed);
 
                 ui.debug(&format!("Tmp: {:?}", tmpdir.path()));
                 ui.info(&format!("Dir: {:?}", tmpdir.path()));
@@ -274,13 +270,10 @@ impl ArtifactProcessor {
                 if name.ends_with(".zip") {
                     ui.info(&format!("Nested: {}", name));
                     let tmpdir = tempdir()?;
-                    ui.record_temp_file(tmpdir.path());
                     let (src, signed) = (
                         tmpdir.path().join("nested-src.zip"),
                         tmpdir.path().join("nested-signed.zip"),
                     );
-                    ui.record_temp_file(&src);
-                    ui.record_temp_file(&signed);
 
                     ui.debug(&format!("Tmp dir: {:?}", tmpdir.path()));
                     if ui.debug {
@@ -300,10 +293,6 @@ impl ArtifactProcessor {
 
                     ui.debug(&format!("Sign: {} -> {}", src.display(), signed.display()));
                     Self::sign_nested_src(&src, &signed, keys, ui)?;
-
-                    let ft = FileTime::from_system_time(std::time::SystemTime::now());
-                    set_file_times(&signed, ft, ft)?;
-                    ui.debug(&format!("Time: {:?}", signed));
 
                     let mut nested_file = BufReader::new(File::open(&signed)?);
                     let total_read =
@@ -410,16 +399,8 @@ impl ArtifactProcessor {
         }
         writer.finish()?;
         ui.debug(&format!("{}: {}", label, output.display()));
-        // NOTE: The output file's filesystem mtime is set to `now()`, while
-        // every ZIP entry timestamp uses the certificate's `notBefore` date
-        // for deterministic builds. This inconsistency is intentional —
-        // the output mtime does not affect signing — but tools that key
-        // off the file mtime will see the wall-clock value. If you need
-        // full reproducibility (e.g. for content-addressed storage),
-        // pass a fixed `--mtime` flag or patch this line to use the
-        // cert's notBefore instead.
-        let ft = FileTime::from_system_time(std::time::SystemTime::now());
-        set_file_times(output, ft, ft)?;
+        // NOTE: the output file's mtime is left to the OS; only ZIP entry
+        // timestamps use the certificate's `notBefore` for reproducible builds.
         ui.debug("Integrity check...");
         Self::verify_zip_integrity_with_ui(output, Some(ui))?;
         ui.debug("Integrity OK");

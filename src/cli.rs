@@ -156,9 +156,6 @@ fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
     // NamedTempFile cleans up on drop; keep it alive through the function.
     drop(output_temp_file);
 
-    if result.is_ok() {
-        ui.print_temp_files();
-    }
     result
 }
 
@@ -183,7 +180,6 @@ fn prepare_output_tempfile(
         ));
     }
     config.output_path = temp_file.path().to_path_buf();
-    ui.record_temp_file(temp_file.path());
     Ok(Some(temp_file))
 }
 

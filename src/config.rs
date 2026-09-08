@@ -19,7 +19,7 @@
 use crate::error::SignerError;
 use clap::ArgMatches;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
 /// Execution mode for the application.
@@ -85,6 +85,68 @@ impl Config {
         }
     }
 
+    /// Shared input-file check: must exist and be readable.
+    /// `ctx` keeps the caller's log wording (e.g. `" for verification"`).
+    fn load_input_file(
+        path: PathBuf,
+        ctx: &str,
+        ui: &crate::ui::Ui,
+        verbose: bool,
+    ) -> Result<PathBuf, SignerError> {
+        if !path.exists() {
+            return Err(SignerError::Config(format!(
+                "Input file does not exist: {}",
+                path.display()
+            )));
+        }
+        // Validate that input is a readable file
+        std::fs::metadata(&path).map_err(|e| {
+            SignerError::Config(format!(
+                "Cannot access input file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        ui.debug(&format!("Using input file{}: {}", ctx, path.display()));
+        if verbose {
+            ui.info(&format!("Input: {}", path.display()));
+        }
+        Ok(path)
+    }
+
+    /// Shared `--public-key` loader. `ctx` keeps the caller's log wording.
+    fn load_cert_opt(
+        matches: &ArgMatches,
+        ctx: &str,
+        ui: &crate::ui::Ui,
+        verbose: bool,
+    ) -> Result<Option<PathBuf>, SignerError> {
+        if let Some(cert_str) = matches.get_one::<String>("public_key") {
+            let cert_path = PathBuf::from(cert_str);
+            if !cert_path.exists() {
+                return Err(SignerError::Config(format!(
+                    "Certificate file does not exist: {}",
+                    cert_path.display()
+                )));
+            }
+            ui.debug(&format!(
+                "Using certificate{}: {}",
+                ctx,
+                cert_path.display()
+            ));
+            if verbose {
+                ui.info(&format!("Cert: {}", cert_path.display()));
+            }
+            Ok(Some(cert_path))
+        } else {
+            ui.debug(&format!("Using default development certificate{}", ctx));
+            if verbose {
+                ui.info("Using default cert");
+            }
+            Ok(None)
+        }
+    }
+
     /// Parse signing mode configuration.
     ///
     /// # Arguments
@@ -130,25 +192,7 @@ impl Config {
             }
             (temp.path().to_path_buf(), Some(temp))
         } else {
-            let path = PathBuf::from(input_str);
-            if !path.exists() {
-                return Err(SignerError::Config(format!(
-                    "Input file does not exist: {}",
-                    path.display()
-                )));
-            }
-            // Validate that input is a readable file
-            std::fs::metadata(&path).map_err(|e| {
-                SignerError::Config(format!(
-                    "Cannot access input file {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            ui.debug(&format!("Using input file: {}", path.display()));
-            if verbose {
-                ui.info(&format!("Input: {}", path.display()));
-            }
+            let path = Self::load_input_file(PathBuf::from(input_str), "", ui, verbose)?;
             (path, None)
         };
 
@@ -217,26 +261,7 @@ impl Config {
             None
         };
 
-        let cert_path = if let Some(cert_str) = matches.get_one::<String>("public_key") {
-            let cert_path = PathBuf::from(cert_str);
-            if !cert_path.exists() {
-                return Err(SignerError::Config(format!(
-                    "Certificate file does not exist: {}",
-                    cert_path.display()
-                )));
-            }
-            ui.debug(&format!("Using certificate: {}", cert_path.display()));
-            if verbose {
-                ui.info(&format!("Cert: {}", cert_path.display()));
-            }
-            Some(cert_path)
-        } else {
-            ui.debug("Using default development certificate");
-            if verbose {
-                ui.info("Using default cert");
-            }
-            None
-        };
+        let cert_path = Self::load_cert_opt(matches, "", ui, verbose)?;
 
         let overwrite = matches.get_flag("overwrite");
 
@@ -273,62 +298,20 @@ impl Config {
         verbosity_level: u8,
         ui: &crate::ui::Ui,
     ) -> Result<Self, SignerError> {
-        let input_path = PathBuf::from(matches.get_one::<String>("input").ok_or_else(|| {
-            SignerError::Config("No input file specified for verification".into())
-        })?);
-
-        if !input_path.exists() {
-            return Err(SignerError::Config(format!(
-                "Input file does not exist: {}",
-                input_path.display()
-            )));
-        }
-
-        // Validate that input is a readable file
-        std::fs::metadata(&input_path).map_err(|e| {
-            SignerError::Config(format!(
-                "Cannot access input file {}: {}",
-                input_path.display(),
-                e
-            ))
-        })?;
-
-        ui.debug(&format!(
-            "Using input file for verification: {}",
-            input_path.display()
-        ));
-        if verbose {
-            ui.info(&format!("Input: {}", input_path.display()));
-        }
+        let input_path = Self::load_input_file(
+            PathBuf::from(matches.get_one::<String>("input").ok_or_else(|| {
+                SignerError::Config("No input file specified for verification".into())
+            })?),
+            " for verification",
+            ui,
+            verbose,
+        )?;
 
         // For verification, output_path is irrelevant, but we keep it valid to satisfy the struct
         let output_path = input_path.clone();
 
         // Verification mainly needs the public key/cert
-        let cert_path = if let Some(cert_str) = matches.get_one::<String>("public_key") {
-            let cert_path = Path::new(cert_str);
-            if !cert_path.exists() {
-                return Err(SignerError::Config(format!(
-                    "Certificate file does not exist: {}",
-                    cert_path.display()
-                )));
-            }
-            let path = PathBuf::from(cert_str);
-            ui.debug(&format!(
-                "Using certificate for verification: {}",
-                path.display()
-            ));
-            if verbose {
-                ui.info(&format!("Cert: {}", path.display()));
-            }
-            Some(path)
-        } else {
-            ui.debug("Using default development certificate for verification");
-            if verbose {
-                ui.info("Using default cert");
-            }
-            None
-        };
+        let cert_path = Self::load_cert_opt(matches, " for verification", ui, verbose)?;
 
         // Private key is irrelevant for verify, but we parse it if passed (unlikely in this mode)
         let key_path = None;
