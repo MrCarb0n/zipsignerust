@@ -137,11 +137,7 @@ impl ArtifactProcessor {
                     ui.debug(&format!("Extr: {} -> {}", name, src.display()));
                 }
 
-                let nested_digests = Self::compute_manifest_digests(&src, ui)?;
-                ui.debug(&format!("Nested: {} entries", nested_digests.len()));
-
-                Self::write_signed_zip(&src, &signed, keys, &nested_digests, ui)?;
-                ui.debug(&format!("Signed: {:?}", signed));
+                Self::sign_nested_src(&src, &signed, keys, ui)?;
 
                 let nested_bytes = fs::read(&signed)?;
                 let digest = CryptoEngine::compute_sha1(&nested_bytes);
@@ -162,6 +158,90 @@ impl ArtifactProcessor {
         })
     }
 
+    /// Sign an extracted nested archive: digest its manifest and write the
+    /// signed copy next to it. Shared by the digest pass and the copy pass.
+    fn sign_nested_src(
+        src: &Path,
+        signed: &Path,
+        keys: &KeyChain,
+        ui: &Ui,
+    ) -> Result<(), SignerError> {
+        let nested_digests = Self::compute_manifest_digests(src, ui)?;
+        ui.debug(&format!("Nested: {} entries", nested_digests.len()));
+        Self::write_signed_zip(src, signed, keys, &nested_digests, ui)?;
+        ui.debug(&format!("Signed: {:?}", signed));
+        Ok(())
+    }
+
+    /// Sum of entry sizes, using pre-signed bytes where available.
+    fn total_entry_size(
+        archive: &mut ZipArchive<BufReader<File>>,
+        nested_files: Option<&BTreeMap<String, Vec<u8>>>,
+    ) -> Result<u64, SignerError> {
+        let mut total = 0u64;
+        for i in 0..archive.len() {
+            let f = archive.by_index(i)?;
+            if !f.name().ends_with('/') && !Self::is_sig_file(f.name()) {
+                total += nested_files
+                    .and_then(|m| m.get(f.name()))
+                    .map(|b| b.len() as u64)
+                    .unwrap_or_else(|| f.size());
+            }
+        }
+        Ok(total)
+    }
+
+    fn show_write_progress(ui: &Ui, total_size: u64, file_count: u64) {
+        if ui.verbose {
+            if total_size > 10 * 1024 * 1024 {
+                ui.show_detailed_progress_bar(total_size, "Processing", "bytes");
+            } else {
+                ui.show_progress_bar(file_count, "Writing files");
+            }
+        }
+    }
+
+    /// Copy entry bytes through, advancing the progress bar.
+    fn copy_tracked<R: Read, W: Write>(
+        reader: &mut R,
+        writer: &mut W,
+        buf: &mut [u8],
+        ui: &Ui,
+        pos: u64,
+    ) -> Result<u64, SignerError> {
+        let mut total = 0u64;
+        loop {
+            let n = reader.read(buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+            total += n as u64;
+            if ui.has_progress_bar() {
+                ui.update_progress(pos + total);
+            }
+        }
+        Ok(total)
+    }
+
+    fn start_copied_entry(
+        writer: &mut ZipWriter<BufWriter<File>>,
+        name: &str,
+        compression: CompressionMethod,
+        unix_mode: u32,
+        timestamp: DateTime,
+    ) -> Result<(), SignerError> {
+        writer.start_file(
+            name,
+            FileOptions::<()>::default()
+                .compression_method(compression)
+                .last_modified_time(timestamp)
+                .unix_permissions(unix_mode)
+                .with_alignment(4),
+        )?;
+        Ok(())
+    }
+
     pub fn write_signed_zip(
         input: &Path,
         output: &Path,
@@ -173,21 +253,9 @@ impl ArtifactProcessor {
         let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
-        let mut total_size = 0u64;
-        for i in 0..archive.len() {
-            let f = archive.by_index(i)?;
-            if !f.name().ends_with('/') && !Self::is_sig_file(f.name()) {
-                total_size += f.size();
-            }
-        }
+        let total_size = Self::total_entry_size(&mut archive, None)?;
 
-        if ui.verbose {
-            if total_size > 10 * 1024 * 1024 {
-                ui.show_detailed_progress_bar(total_size, "Processing", "bytes");
-            } else {
-                ui.show_progress_bar(archive.len() as u64, "Writing files");
-            }
-        }
+        Self::show_write_progress(ui, total_size, archive.len() as u64);
 
         PB.with(|local_buf| {
             let mut buf = local_buf.borrow_mut();
@@ -200,14 +268,8 @@ impl ArtifactProcessor {
                     continue;
                 }
 
-                writer.start_file(
-                    &name,
-                    FileOptions::<()>::default()
-                        .compression_method(f.compression())
-                        .last_modified_time(timestamp)
-                        .unix_permissions(f.unix_mode().unwrap_or(0o644))
-                        .with_alignment(4),
-                )?;
+                let (compression, mode) = (f.compression(), f.unix_mode().unwrap_or(0o644));
+                Self::start_copied_entry(&mut writer, &name, compression, mode, timestamp)?;
 
                 if name.ends_with(".zip") {
                     ui.info(&format!("Nested: {}", name));
@@ -226,70 +288,31 @@ impl ArtifactProcessor {
                     }
                     ui.debug(&format!("Extr: {:?}", src));
 
-                    let mut total_written = 0u64;
                     {
                         let mut out = OpenOptions::new()
                             .create(true)
                             .write(true)
                             .truncate(true)
                             .open(&src)?;
-                        loop {
-                            let n = f.read(&mut buf)?;
-                            if n == 0 {
-                                break;
-                            }
-                            out.write_all(&buf[..n])?;
-                            total_written += n as u64;
-                            if ui.has_progress_bar() {
-                                ui.update_progress(pos + total_written);
-                            }
-                        }
-                        ui.debug(&format!(
-                            "Extr: {} bytes to: {}",
-                            total_written,
-                            src.display()
-                        ));
+                        let n = Self::copy_tracked(&mut f, &mut out, &mut *buf, ui, pos)?;
+                        ui.debug(&format!("Extr: {} bytes to: {}", n, src.display()));
                     }
 
-                    let nested_digests = Self::compute_manifest_digests(&src, ui)?;
-                    ui.debug(&format!("Nested: {} entries", nested_digests.len()));
                     ui.debug(&format!("Sign: {} -> {}", src.display(), signed.display()));
-                    Self::write_signed_zip(&src, &signed, keys, &nested_digests, ui)?;
-                    ui.debug(&format!("Signed: {:?}", signed));
+                    Self::sign_nested_src(&src, &signed, keys, ui)?;
 
                     let ft = FileTime::from_system_time(std::time::SystemTime::now());
                     set_file_times(&signed, ft, ft)?;
                     ui.debug(&format!("Time: {:?}", signed));
 
                     let mut nested_file = BufReader::new(File::open(&signed)?);
-                    let mut total_read = 0u64;
-                    loop {
-                        let n = nested_file.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        writer.write_all(&buf[..n])?;
-                        total_read += n as u64;
-                        if ui.has_progress_bar() {
-                            ui.update_progress(pos + total_read);
-                        }
-                    }
+                    let total_read =
+                        Self::copy_tracked(&mut nested_file, &mut writer, &mut *buf, ui, pos)?;
                     ui.debug(&format!("Embed: {} ({} bytes)", name, total_read));
                     ui.debug(&format!("Cleanup: {:?}", tmpdir.path()));
                     pos += total_read + f.size();
                 } else {
-                    let mut total_read = 0u64;
-                    loop {
-                        let n = f.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        writer.write_all(&buf[..n])?;
-                        total_read += n as u64;
-                        if ui.has_progress_bar() {
-                            ui.update_progress(pos + total_read);
-                        }
-                    }
+                    let total_read = Self::copy_tracked(&mut f, &mut writer, &mut *buf, ui, pos)?;
                     ui.debug(&format!("Copy: {} ({} bytes)", name, total_read));
                     pos += total_read;
                 }
@@ -317,25 +340,9 @@ impl ArtifactProcessor {
         let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
 
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
-        let mut total_size = 0u64;
-        for i in 0..archive.len() {
-            let f = archive.by_index(i)?;
-            if !f.name().ends_with('/') && !Self::is_sig_file(f.name()) {
-                if let Some(nb) = nested_files.get(f.name()) {
-                    total_size += nb.len() as u64;
-                } else {
-                    total_size += f.size();
-                }
-            }
-        }
+        let total_size = Self::total_entry_size(&mut archive, Some(nested_files))?;
 
-        if ui.verbose {
-            if total_size > 10 * 1024 * 1024 {
-                ui.show_detailed_progress_bar(total_size, "Processing", "bytes");
-            } else {
-                ui.show_progress_bar(archive.len() as u64, "Writing files");
-            }
-        }
+        Self::show_write_progress(ui, total_size, archive.len() as u64);
 
         PB.with(|local_buf| {
             let mut buf = local_buf.borrow_mut();
@@ -348,14 +355,8 @@ impl ArtifactProcessor {
                     continue;
                 }
 
-                writer.start_file(
-                    &name,
-                    FileOptions::<()>::default()
-                        .compression_method(f.compression())
-                        .last_modified_time(timestamp)
-                        .unix_permissions(f.unix_mode().unwrap_or(0o644))
-                        .with_alignment(4),
-                )?;
+                let (compression, mode) = (f.compression(), f.unix_mode().unwrap_or(0o644));
+                Self::start_copied_entry(&mut writer, &name, compression, mode, timestamp)?;
 
                 if let Some(nested_bytes) = nested_files.get(&name) {
                     ui.info(&format!("Embed: {}", name));
@@ -365,19 +366,7 @@ impl ArtifactProcessor {
                     }
                     pos += nested_bytes.len() as u64;
                 } else {
-                    let mut total_read = 0u64;
-                    loop {
-                        let n = f.read(&mut buf)?;
-                        if n == 0 {
-                            break;
-                        }
-                        writer.write_all(&buf[..n])?;
-                        total_read += n as u64;
-                        if ui.has_progress_bar() {
-                            ui.update_progress(pos + total_read);
-                        }
-                    }
-                    pos += total_read;
+                    pos += Self::copy_tracked(&mut f, &mut writer, &mut *buf, ui, pos)?;
                 }
 
                 if ui.verbose && !ui.has_progress_bar() {
