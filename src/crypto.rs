@@ -22,33 +22,53 @@ use std::io::Read;
 pub struct CryptoEngine;
 
 impl CryptoEngine {
+    /// Base64 one-shot digest of `data` under any algorithm.
+    pub fn compute_digest(alg: &'static digest::Algorithm, data: &[u8]) -> String {
+        base64_engine.encode(digest::digest(alg, data).as_ref())
+    }
+
     pub fn compute_sha1(data: &[u8]) -> String {
-        base64_engine.encode(digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, data).as_ref())
+        Self::compute_digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, data)
+    }
+
+    pub fn compute_sha256(data: &[u8]) -> String {
+        Self::compute_digest(&digest::SHA256, data)
     }
 
     pub fn compute_stream_sha1<R: Read>(reader: &mut R) -> Result<String, SignerError> {
-        Self::compute_stream_sha1_with_ui(reader, None, None)
+        Self::compute_stream_digest(reader, &digest::SHA1_FOR_LEGACY_USE_ONLY, None, None)
     }
 
-    pub fn compute_stream_sha1_with_ui<R: Read>(
+    pub fn compute_stream_sha256<R: Read>(reader: &mut R) -> Result<String, SignerError> {
+        Self::compute_stream_digest(reader, &digest::SHA256, None, None)
+    }
+
+    pub fn compute_stream_sha256_with_ui<R: Read>(
         reader: &mut R,
         ui: Option<&Ui>,
         file_path: Option<&str>,
     ) -> Result<String, SignerError> {
-        if let Some(ui) = ui {
-            if let Some(path) = file_path {
-                if ui.very_verbose || ui.verbose {
-                    let msg = format!("SHA1: {}", path);
-                    if ui.very_verbose {
-                        ui.debug(&msg);
-                    } else {
-                        ui.info(&msg);
-                    }
+        Self::compute_stream_digest(reader, &digest::SHA256, ui, file_path)
+    }
+
+    pub(crate) fn compute_stream_digest<R: Read>(
+        reader: &mut R,
+        alg: &'static digest::Algorithm,
+        ui: Option<&Ui>,
+        file_path: Option<&str>,
+    ) -> Result<String, SignerError> {
+        if let (Some(ui), Some(path)) = (ui, file_path) {
+            if ui.very_verbose || ui.verbose {
+                let msg = format!("Digest: {}", path);
+                if ui.very_verbose {
+                    ui.debug(&msg);
+                } else {
+                    ui.info(&msg);
                 }
             }
         }
 
-        let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
+        let mut ctx = digest::Context::new(alg);
         let mut buf = [0u8; BUFFER_SIZE];
         let mut processed = 0u64;
         loop {
@@ -61,18 +81,39 @@ impl CryptoEngine {
 
             if let Some(ui) = ui {
                 if ui.debug && processed % (BUFFER_SIZE as u64 * 10) == 0 {
-                    ui.trace(&format!("SHA1: {} bytes", processed));
+                    ui.trace(&format!("Digest: {} bytes", processed));
                 }
             }
         }
 
         if let Some(ui) = ui {
             if ui.very_verbose {
-                ui.debug(&format!("SHA1 complete: {} bytes", processed));
+                ui.debug(&format!("Digest complete: {} bytes", processed));
             }
         }
 
         Ok(base64_engine.encode(ctx.finish().as_ref()))
+    }
+
+    /// Colon-separated uppercase SHA-256 fingerprint of a DER certificate.
+    pub fn sha256_fingerprint(der: &[u8]) -> String {
+        digest::digest(&digest::SHA256, der)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    /// Compare fingerprints ignoring separators and case (`AA:BB` or `aabb`).
+    pub fn fingerprints_match(a: &str, b: &str) -> bool {
+        fn normalize(s: &str) -> String {
+            s.chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .map(|c| c.to_ascii_uppercase())
+                .collect()
+        }
+        normalize(a) == normalize(b)
     }
 }
 
@@ -117,5 +158,32 @@ mod tests {
         let mut reader = std::io::Cursor::new(&data);
         let result = CryptoEngine::compute_stream_sha1(&mut reader).unwrap();
         assert_eq!(result, CryptoEngine::compute_sha1(&data));
+    }
+
+    #[test]
+    fn test_sha256_abc() {
+        assert_eq!(
+            CryptoEngine::compute_sha256(b"abc"),
+            "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+        );
+    }
+
+    #[test]
+    fn test_stream_sha256() {
+        let data = b"stream test data";
+        let mut reader = std::io::Cursor::new(data);
+        let result = CryptoEngine::compute_stream_sha256(&mut reader).unwrap();
+        assert_eq!(result, CryptoEngine::compute_sha256(data));
+    }
+
+    #[test]
+    fn test_fingerprint_format_and_match() {
+        let fp = CryptoEngine::sha256_fingerprint(b"cert");
+        assert_eq!(fp.len(), 32 * 3 - 1);
+        assert!(fp.contains(':'));
+
+        let plain = fp.replace(':', "").to_lowercase();
+        assert!(CryptoEngine::fingerprints_match(&fp, &plain));
+        assert!(!CryptoEngine::fingerprints_match(&fp, "00:00"));
     }
 }

@@ -6,10 +6,10 @@
 # Basic signing (creates output file)
 zipsignerust sign input.zip signed-output.zip
 
-# Sign in-place (updates input file, creates .bak backup)
+# Sign in-place (updates input file, keeps a timestamped .bak backup)
 zipsignerust sign --inplace input.zip
 
-# Custom keys
+# Custom keys (the two options are required together and must match)
 zipsignerust sign input.zip output.zip --private-key key.pem --public-key cert.pem
 
 # Verbose mode with colorful output and progress indicators
@@ -25,7 +25,7 @@ When using verbose mode, ZipSignerust provides colorful, structured output:
 
 ```
 +-----------------------+
-|  ZipSignerust v1.0.0  |
+|  ZipSignerust v2.0.0  |
 +-----------------------+
 [i] Loading keys...
 
@@ -57,6 +57,9 @@ zipsignerust -v verify signed-archive.zip
 
 # Verify against specific certificate
 zipsignerust verify signed-archive.zip --public-key my-cert.pem
+
+# Verify the signer certificate fingerprint (colons optional, case-insensitive)
+zipsignerust verify signed-archive.zip --pin AA:BB:CC:…
 ```
 
 ## Pipeline Support
@@ -74,10 +77,11 @@ ZipSignerust supports Unix-style pipelines for seamless integration in automated
 
 | Option                | Description                                            |
 | :-------------------- | :----------------------------------------------------- |
-| `-i`, `--inplace`     | Modify the input file directly (creates `.bak` backup) |
+| `-i`, `--inplace`     | Modify the input file directly (keeps a timestamped `.bak` backup) |
 | `-f`, `--overwrite`   | Force overwrite if output file exists                  |
 | `-k`, `--private-key` | Path to custom private key (PEM/PK8)                   |
 | `-p`, `--public-key`  | Path to custom public key/certificate (PEM)            |
+| `-P`, `--pin`         | Expected signer cert SHA-256 fingerprint (`verify`)    |
 | `-v`, `--verbose`     | Enable verbose logging with progress indicators        |
 | `-q`, `--quiet`       | Suppress all output except errors                      |
 | `-V`, `--version`     | Print version information                              |

@@ -16,6 +16,7 @@
 
 use crate::{
     config::{self, Config},
+    crypto::CryptoEngine,
     error::SignerError,
     keys::KeyChain,
     ui::{SummaryField, Ui},
@@ -77,7 +78,7 @@ pub fn run() -> Result<(), SignerError> {
                         .short('i')
                         .long("inplace")
                         .action(ArgAction::SetTrue)
-                        .help("Sign input file directly (creates backup)"),
+                        .help("Sign input file directly (keeps a timestamped .bak backup)"),
                 ),
         )
         .subcommand(
@@ -95,6 +96,12 @@ pub fn run() -> Result<(), SignerError> {
                         .short('p')
                         .long("public-key")
                         .help("Custom public key/cert (PEM) to verify against"),
+                )
+                .arg(
+                    Arg::new("pin")
+                        .short('P')
+                        .long("pin")
+                        .help("Expected signer certificate SHA-256 fingerprint (AA:BB:… or hex)"),
                 ),
         )
         .arg(
@@ -184,7 +191,21 @@ fn prepare_output_tempfile(
 }
 
 fn run_verify(config: &Config, ui: &Ui) -> Result<(), SignerError> {
-    let key_chain = KeyChain::new(None, config.cert_path.as_deref(), ui)?;
+    let key_chain = KeyChain::for_verification(config.cert_path.as_deref(), ui)?;
+
+    if let Some(expected) = &config.pin {
+        let der = key_chain.cert_der.as_deref().ok_or_else(|| {
+            SignerError::Config("No certificate loaded for --pin check".into())
+        })?;
+        let actual = CryptoEngine::sha256_fingerprint(der);
+        if !CryptoEngine::fingerprints_match(&actual, expected) {
+            return Err(SignerError::Validation(format!(
+                "Certificate fingerprint mismatch: expected {}, got {}",
+                expected, actual
+            )));
+        }
+        ui.info(&format!("Certificate pin matched: {}", actual));
+    }
 
     ui.print_mode_header("VERIFICATION MODE");
     ui.info(&format!(
@@ -348,12 +369,8 @@ fn finish_sign(
     ui: &Ui,
 ) -> Result<(), SignerError> {
     if inplace {
-        ui.info(&format!(
-            "Removing temporary working file: {:?}",
-            working_input
-        ));
-        std::fs::remove_file(working_input)?;
         ui.success("In-place signing complete.");
+        ui.info(&format!("Backup kept: {}", working_input.display()));
         if ui.verbose {
             eprintln!();
         }
@@ -364,6 +381,7 @@ fn finish_sign(
                 SummaryField::new("Status", "Success"),
                 SummaryField::new("Mode", "In-Place"),
                 SummaryField::new("File", config.input_path.display().to_string()),
+                SummaryField::new("Backup", working_input.display().to_string()),
                 SummaryField::new("Key Used", key_type.to_string()),
             ],
         );
@@ -430,15 +448,20 @@ fn binary_name() -> String {
         .unwrap_or_else(|| APP_BIN_NAME.to_string())
 }
 
-/// Append a `.bak` suffix to a path, preserving the original extension.
-///
-/// Industry-standard convention (used by editors, build tools, and most CLI
-/// tools) is to append the suffix rather than replace the extension. This
-/// keeps the original filename recognizable and avoids losing multi-part
-/// extensions like `.tar.gz` -> `.tar.bak`.
+/// Timestamped backup path: `input.zip` -> `input.zip.260114092033.bak`
+/// (`yymmddhhmmss`, UTC), so a later backup cannot overwrite an earlier one.
 fn append_backup_suffix(path: &std::path::Path) -> std::path::PathBuf {
+    let now = x509_parser::prelude::ASN1Time::now().to_datetime();
     let mut s = path.as_os_str().to_owned();
-    s.push(".bak");
+    s.push(format!(
+        ".{:02}{:02}{:02}{:02}{:02}{:02}.bak",
+        now.year() % 100,
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    ));
     std::path::PathBuf::from(s)
 }
 

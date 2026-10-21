@@ -19,13 +19,29 @@ use std::io::Read;
 use zip::ZipArchive;
 
 use crate::{
-    crypto::CryptoEngine, error::SignerError, keys::KeyChain, pkcs7, processor::ArtifactProcessor,
-    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    crypto::CryptoEngine, error::SignerError, keys::KeyChain, pkcs7, CERT_RSA_NAME, CERT_SF_NAME,
+    MANIFEST_NAME,
 };
 
 /// Error message returned when a candidate archive has no RSA signature
 /// entry (i.e. it is not signed or the signature has been stripped).
 pub const ERR_NO_RSA_SIGNATURE: &str = "No RSA Signature file found";
+
+/// Digest fields accepted in MANIFEST.MF / *.SF, strongest first.
+const DIGEST_FIELDS: [(&str, &ring::digest::Algorithm); 4] = [
+    ("SHA-512-Digest", &ring::digest::SHA512),
+    ("SHA-384-Digest", &ring::digest::SHA384),
+    ("SHA-256-Digest", &ring::digest::SHA256),
+    ("SHA1-Digest", &ring::digest::SHA1_FOR_LEGACY_USE_ONLY),
+];
+
+/// Digest algorithm for a manifest/SF digest field name.
+fn digest_algorithm_for(field: &str) -> Option<&'static ring::digest::Algorithm> {
+    DIGEST_FIELDS
+        .iter()
+        .find(|(name, _)| *name == field)
+        .map(|(_, alg)| *alg)
+}
 
 /// Verifies signatures on Android archive files
 pub struct ArtifactVerifier;
@@ -84,9 +100,17 @@ impl ArtifactVerifier {
 
         ui.debug("Extracting PKCS7 signature data...");
         let signer_info = pkcs7::extract_signer_info(&signature_bytes)?;
+        ui.debug(&format!(
+            "PKCS7 digest algorithm: {:?}",
+            signer_info.digest_algorithm
+        ));
 
         ui.debug("Verifying RSA signature over PKCS7 authenticated attributes...");
-        if let Err(e) = public_key.verify(&signer_info.auth_attrs_der, &signer_info.signature) {
+        let verifier = ring::signature::UnparsedPublicKey::new(
+            signer_info.digest_algorithm.verification_algorithm(),
+            public_key.as_ref().to_vec(),
+        );
+        if let Err(e) = verifier.verify(&signer_info.auth_attrs_der, &signer_info.signature) {
             ui.debug(&format!("RSA signature verification failed: {}", e));
             return Err(SignerError::Validation(
                 format!("Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.", e)
@@ -95,7 +119,7 @@ impl ArtifactVerifier {
         ui.debug("RSA signature verification passed");
 
         ui.debug("Verifying SF file digest matches PKCS7 messageDigest...");
-        let sf_digest = ring::digest::digest(&ring::digest::SHA256, &sf_file_bytes);
+        let sf_digest = ring::digest::digest(signer_info.digest_algorithm.digest(), &sf_file_bytes);
         if sf_digest.as_ref() != signer_info.message_digest.as_slice() {
             return Err(SignerError::Validation(format!(
                 "SF file digest mismatch. Computed: {:?}, Expected: {:?}",
@@ -116,10 +140,18 @@ impl ArtifactVerifier {
             })?
             .read_to_end(&mut manifest_bytes)?;
 
-        let manifest_hash = CryptoEngine::compute_sha1(&manifest_bytes);
-        let sf_content = String::from_utf8_lossy(&sf_file_bytes);
+        let sf_str = String::from_utf8_lossy(&sf_file_bytes);
+        let unfolded_sf_lines = Self::unfold_lines(sf_str.as_ref());
+        let manifest_hash_ok = DIGEST_FIELDS.iter().any(|(field, alg)| {
+            let expected = format!(
+                "{}-Manifest: {}",
+                field,
+                CryptoEngine::compute_digest(alg, &manifest_bytes)
+            );
+            unfolded_sf_lines.iter().any(|line| line == &expected)
+        });
 
-        if !sf_content.contains(&format!("SHA1-Digest-Manifest: {}", manifest_hash)) {
+        if !manifest_hash_ok {
             return Err(SignerError::Validation(
                 format!("Manifest hash mismatch. The manifest file ({}) does not match the hash stored in the signature file ({}). Archive may be corrupted or tampered with.", MANIFEST_NAME, CERT_SF_NAME)
             ));
@@ -129,8 +161,6 @@ impl ArtifactVerifier {
         let unfolded_manifest_lines = Self::unfold_lines(manifest_str.as_ref());
         let manifest_entries = Self::parse_entries(&unfolded_manifest_lines);
 
-        let sf_str = String::from_utf8_lossy(&sf_file_bytes);
-        let unfolded_sf_lines = Self::unfold_lines(sf_str.as_ref());
         let sf_entries = Self::parse_entries(&unfolded_sf_lines);
 
         let mut file_map = std::collections::BTreeMap::new();
@@ -146,12 +176,18 @@ impl ArtifactVerifier {
             }
 
             // ponytail: stream straight into the digest; no whole-file buffer
-            let digest = CryptoEngine::compute_stream_sha1(&mut f)?;
+            let digest = match manifest_entries
+                .get(&name)
+                .and_then(|(field, _)| digest_algorithm_for(field))
+            {
+                Some(alg) => CryptoEngine::compute_stream_digest(&mut f, alg, None, None)?,
+                None => CryptoEngine::compute_stream_sha256(&mut f)?,
+            };
             file_map.insert(name, digest);
         }
 
         for (name, file_digest) in &file_map {
-            let m_digest = manifest_entries.get(name).ok_or_else(|| {
+            let (_, m_digest) = manifest_entries.get(name).ok_or_else(|| {
                 SignerError::Validation(format!("File '{}' exists in archive but is missing from manifest. Archive may be corrupted or tampered with.", name))
             })?;
             if m_digest != file_digest {
@@ -171,10 +207,23 @@ impl ArtifactVerifier {
             }
         }
 
-        for (name, m_digest) in &manifest_entries {
-            let entry_bytes = ArtifactProcessor::create_manifest_entry(name, m_digest);
-            let entry_hash = CryptoEngine::compute_sha1(&entry_bytes);
-            let sf_digest = sf_entries.get(name).ok_or_else(|| {
+        let manifest_sections: std::collections::BTreeMap<String, Vec<u8>> =
+            Self::raw_manifest_entries(&manifest_bytes).into_iter().collect();
+
+        for (name, (field, _)) in &manifest_entries {
+            let alg = digest_algorithm_for(field).ok_or_else(|| {
+                SignerError::Validation(format!("Unsupported manifest digest field '{}'.", field))
+            })?;
+            // The SF per-entry digest covers the manifest section byte-for-byte,
+            // including line wrapping, so hash the raw bytes.
+            let section = manifest_sections.get(name).ok_or_else(|| {
+                SignerError::Validation(format!(
+                    "Manifest entry for '{}' could not be located in {}.",
+                    name, MANIFEST_NAME
+                ))
+            })?;
+            let entry_hash = CryptoEngine::compute_digest(alg, section);
+            let (_, sf_digest) = sf_entries.get(name).ok_or_else(|| {
                 SignerError::Validation(format!(
                     "File '{}' exists in manifest but is missing from signature file ({}).",
                     name, CERT_SF_NAME
@@ -205,10 +254,48 @@ impl ArtifactVerifier {
         out
     }
 
-    fn parse_entries(lines: &[String]) -> std::collections::BTreeMap<String, String> {
+    /// Raw bytes of each MANIFEST.MF entry section, keyed by Name, including
+    /// the blank line that terminates the section — those exact bytes are what
+    /// the *.SF per-entry digest covers.
+    fn raw_manifest_entries(manifest: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut rest = manifest;
+        while !rest.is_empty() {
+            let (section, tail) = match rest.windows(4).position(|w| w == b"\r\n\r\n") {
+                Some(idx) => rest.split_at(idx + 4),
+                None => (rest, &rest[rest.len()..]),
+            };
+            rest = tail;
+            let Some(name_line) = section.strip_prefix(b"Name: ") else {
+                continue;
+            };
+            // Unfold the Name header; continued lines start with a space.
+            let mut name = String::new();
+            let mut first = true;
+            for line in name_line.split(|&b| b == b'\n') {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let piece = if first {
+                    first = false;
+                    line
+                } else if let Some(rest) = line.strip_prefix(b" ") {
+                    rest
+                } else {
+                    break;
+                };
+                name.push_str(&String::from_utf8_lossy(piece));
+            }
+            out.push((name, section.to_vec()));
+        }
+        out
+    }
+
+    /// name -> (digest field name, digest). Strongest digest wins.
+    fn parse_entries(
+        lines: &[String],
+    ) -> std::collections::BTreeMap<String, (String, String)> {
         let mut map = std::collections::BTreeMap::new();
         let mut cur_name: Option<String> = None;
-        let mut cur_digest: Option<String> = None;
+        let mut cur_digest: Option<(String, String)> = None;
 
         for line in lines {
             if line.is_empty() {
@@ -220,8 +307,20 @@ impl ArtifactVerifier {
 
             if let Some(rest) = line.strip_prefix("Name: ") {
                 cur_name = Some(rest.to_string());
-            } else if let Some(rest) = line.strip_prefix("SHA1-Digest: ") {
-                cur_digest = Some(rest.to_string());
+            } else if let Some((field, value)) = line.split_once(": ") {
+                if let Some(rank) = DIGEST_FIELDS.iter().position(|(name, _)| *name == field) {
+                    let keep = cur_digest
+                        .as_ref()
+                        .and_then(|(current, _)| {
+                            DIGEST_FIELDS
+                                .iter()
+                                .position(|(name, _)| *name == current.as_str())
+                        })
+                        .map_or(true, |current_rank| rank < current_rank);
+                    if keep {
+                        cur_digest = Some((field.to_string(), value.to_string()));
+                    }
+                }
             }
         }
 
@@ -275,7 +374,8 @@ mod tests {
         let lines = vec!["Name: f.txt".into(), "SHA1-Digest: d1".into(), "".into()];
         let map = ArtifactVerifier::parse_entries(&lines);
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get("f.txt").unwrap(), "d1");
+        assert_eq!(map.get("f.txt").unwrap().1, "d1");
+        assert_eq!(map.get("f.txt").unwrap().0, "SHA1-Digest");
     }
 
     #[test]
@@ -290,8 +390,8 @@ mod tests {
         ];
         let map = ArtifactVerifier::parse_entries(&lines);
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get("a.txt").unwrap(), "da");
-        assert_eq!(map.get("b.txt").unwrap(), "db");
+        assert_eq!(map.get("a.txt").unwrap().1, "da");
+        assert_eq!(map.get("b.txt").unwrap().1, "db");
     }
 
     #[test]
@@ -311,6 +411,51 @@ mod tests {
         ];
         let map = ArtifactVerifier::parse_entries(&lines);
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get("x.txt").unwrap(), "dx");
+        assert_eq!(map.get("x.txt").unwrap().1, "dx");
+    }
+
+    #[test]
+    fn test_parse_entries_prefers_sha256() {
+        let lines = vec![
+            "Name: x.txt".into(),
+            "SHA1-Digest: old".into(),
+            "SHA-256-Digest: new".into(),
+            "".into(),
+        ];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert_eq!(map.get("x.txt").unwrap().0, "SHA-256-Digest");
+        assert_eq!(map.get("x.txt").unwrap().1, "new");
+    }
+
+    #[test]
+    fn test_parse_entries_accepts_sha384_and_sha512() {
+        let lines = vec![
+            "Name: x.txt".into(),
+            "SHA-256-Digest: old".into(),
+            "SHA-384-Digest: mid".into(),
+            "SHA-512-Digest: new".into(),
+            "".into(),
+        ];
+        let map = ArtifactVerifier::parse_entries(&lines);
+        assert_eq!(map.get("x.txt").unwrap().0, "SHA-512-Digest");
+        assert_eq!(map.get("x.txt").unwrap().1, "new");
+    }
+
+    #[test]
+    fn test_raw_manifest_entries_includes_terminating_blank_line() {
+        let manifest = b"Manifest-Version: 1.0\r\nCreated-By: test\r\n\r\nName: a.txt\r\nSHA-384-Digest: ab\r\n cd\r\n\r\n";
+        let entries = ArtifactVerifier::raw_manifest_entries(manifest);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "a.txt");
+        assert_eq!(
+            entries[0].1,
+            b"Name: a.txt\r\nSHA-384-Digest: ab\r\n cd\r\n\r\n".to_vec()
+        );
+
+        // A folded Name header still yields the full unfolded name.
+        let folded = b"Manifest-Version: 1.0\r\n\r\nName: /very/long/\r\n path/name.txt\r\nSHA-256-Digest: x\r\n\r\n";
+        let entries = ArtifactVerifier::raw_manifest_entries(folded);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "/very/long/path/name.txt");
     }
 }

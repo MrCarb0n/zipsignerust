@@ -48,18 +48,50 @@ impl KeyChain {
     ) -> Result<Self, SignerError> {
         let private_key = Self::load_private_key(priv_path, ui)?;
         let (public_key, cert_not_before, cert_der) = Self::load_public_key(pub_path, ui)?;
-
-        if private_key.is_none() && public_key.is_none() {
-            return Err(SignerError::Config(
-                "Failed to load any keys (both custom and default failed).".into(),
-            ));
-        }
-
-        Ok(Self {
+        let chain = Self {
             private_key,
             public_key,
             cert_not_before,
             cert_der,
+        };
+        chain.check_matching_pair()?;
+        Ok(chain)
+    }
+
+    /// Load only the certificate/public key, for verification
+    pub fn for_verification(pub_path: Option<&Path>, ui: &Ui) -> Result<Self, SignerError> {
+        let (public_key, cert_not_before, cert_der) = Self::load_public_key(pub_path, ui)?;
+        Ok(Self {
+            private_key: None,
+            public_key,
+            cert_not_before,
+            cert_der,
+        })
+    }
+
+    /// Sign a probe message and verify it with the certificate key, so a
+    /// custom key/cert pair that does not match is rejected instead of
+    /// silently producing an archive no verifier accepts.
+    fn check_matching_pair(&self) -> Result<(), SignerError> {
+        let (Some(private), Some(public)) = (&self.private_key, &self.public_key) else {
+            return Ok(());
+        };
+        let msg = b"zipsignerust key pair self-test";
+        let mut signature = vec![0u8; private.public().modulus_len()];
+        private
+            .sign(
+                RSA_SIGNATURE_SCHEME,
+                &ring::rand::SystemRandom::new(),
+                msg,
+                &mut signature,
+            )
+            .map_err(|e| SignerError::Config(format!("Key pair self-test failed: {}", e)))?;
+        public.verify(msg, &signature).map_err(|_| {
+            SignerError::Config(
+                "Private key does not match the certificate. Pass a matching \
+                 --private-key/--public-key pair, or neither to use the embedded dev key."
+                    .into(),
+            )
         })
     }
 
@@ -98,7 +130,7 @@ impl KeyChain {
         let content = match path {
             Some(p) => fs::read(p)?,
             None => {
-                ui.warn("Using embedded dev certificate (see DEV KEY warning above).");
+                ui.warn("Using embedded dev certificate.");
                 crate::certificate::PUBLIC_KEY.as_bytes().to_vec()
             }
         };
@@ -174,5 +206,43 @@ impl KeyChain {
                 DateTime::default()
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dev_key_pair_passes_matching_check() {
+        let keys = KeyChain::new(None, None, &Ui::silent()).unwrap();
+        assert!(keys.check_matching_pair().is_ok());
+    }
+
+    #[test]
+    fn test_mismatched_public_key_is_rejected() {
+        let ui = Ui::silent();
+        let keys = KeyChain::new(None, None, &ui).unwrap();
+
+        // One flipped bit in the public key is enough for the probe signature to fail.
+        let mut modulus = keys.public_key.as_ref().unwrap().as_ref().to_vec();
+        let mid = modulus.len() / 2;
+        modulus[mid] ^= 1;
+
+        let wrong = KeyChain {
+            private_key: keys.private_key,
+            public_key: Some(UnparsedPublicKey::new(RSA_VERIFICATION_ALGORITHM, modulus)),
+            cert_not_before: keys.cert_not_before,
+            cert_der: keys.cert_der,
+        };
+        let err = match wrong.check_matching_pair() {
+            Err(e) => e,
+            Ok(()) => panic!("mismatched public key must be rejected"),
+        };
+        assert!(
+            err.to_string().contains("does not match"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

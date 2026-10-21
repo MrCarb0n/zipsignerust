@@ -16,7 +16,7 @@
 
 use crate::{
     crypto::CryptoEngine, error::SignerError, keys::KeyChain, ui::Ui, APP_NAME, BUFFER_SIZE,
-    CERT_DSA_NAME, CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
+    CERT_RSA_NAME, CERT_SF_NAME, MANIFEST_NAME,
 };
 use crc32fast::Hasher as Crc32;
 use std::{
@@ -30,8 +30,6 @@ use zip::{
     write::{FileOptions, ZipWriter},
     CompressionMethod, DateTime, ZipArchive,
 };
-
-thread_local! { static PB: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; BUFFER_SIZE]); }
 
 #[derive(Debug)]
 pub struct NestedDigests {
@@ -78,9 +76,9 @@ impl ArtifactProcessor {
             let name = f.name().to_string();
 
             if !name.ends_with('/') && !Self::is_sig_file(&name) {
-                ui.debug(&format!("SHA1: {} ({} bytes)", name, f.size()));
+                ui.debug(&format!("SHA-256: {} ({} bytes)", name, f.size()));
                 let digest =
-                    CryptoEngine::compute_stream_sha1_with_ui(&mut f, Some(ui), Some(&name))?;
+                    CryptoEngine::compute_stream_sha256_with_ui(&mut f, Some(ui), Some(&name))?;
                 digests.insert(name, digest);
                 if ui.has_progress_bar() {
                     ui.update_progress(pos + f.size());
@@ -136,16 +134,16 @@ impl ArtifactProcessor {
                 Self::sign_nested_src(&src, &signed, keys, ui)?;
 
                 let nested_bytes = fs::read(&signed)?;
-                let digest = CryptoEngine::compute_sha1(&nested_bytes);
+                let digest = CryptoEngine::compute_sha256(&nested_bytes);
                 digests.insert(name.clone(), digest.clone());
                 nested_files.insert(name.clone(), nested_bytes);
-                ui.debug(&format!("Proc: {} -> SHA1: {}", name, &digest[..8]));
+                ui.debug(&format!("Proc: {} -> SHA-256: {}", name, &digest[..8]));
                 ui.debug(&format!("Cleanup: {:?}", tmpdir.path()));
             } else {
                 let digest =
-                    CryptoEngine::compute_stream_sha1_with_ui(&mut f, Some(ui), Some(&name))?;
+                    CryptoEngine::compute_stream_sha256_with_ui(&mut f, Some(ui), Some(&name))?;
                 digests.insert(name.clone(), digest.clone());
-                ui.debug(&format!("Digest: {} -> SHA1: {}", name, &digest[..8]));
+                ui.debug(&format!("Digest: {} -> SHA-256: {}", name, &digest[..8]));
             }
         }
         Ok(NestedDigests {
@@ -154,17 +152,24 @@ impl ArtifactProcessor {
         })
     }
 
-    /// Sign an extracted nested archive: digest its manifest and write the
-    /// signed copy next to it. Shared by the digest pass and the copy pass.
+    /// Sign an extracted nested archive: digest its contents (handling any
+    /// zips inside it recursively) and write the signed copy next to it.
     fn sign_nested_src(
         src: &Path,
         signed: &Path,
         keys: &KeyChain,
         ui: &Ui,
     ) -> Result<(), SignerError> {
-        let nested_digests = Self::compute_manifest_digests(src, ui)?;
-        ui.debug(&format!("Nested: {} entries", nested_digests.len()));
-        Self::write_signed_zip(src, signed, keys, &nested_digests, ui)?;
+        let nested = Self::compute_digests_prepare_nested(src, keys, ui)?;
+        ui.debug(&format!("Nested: {} entries", nested.digests.len()));
+        Self::write_signed_zip_with_sources(
+            src,
+            signed,
+            keys,
+            &nested.digests,
+            &nested.nested_files,
+            ui,
+        )?;
         ui.debug(&format!("Signed: {:?}", signed));
         Ok(())
     }
@@ -238,85 +243,6 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    pub fn write_signed_zip(
-        input: &Path,
-        output: &Path,
-        keys: &KeyChain,
-        digests: &BTreeMap<String, String>,
-        ui: &Ui,
-    ) -> Result<(), SignerError> {
-        let timestamp = keys.get_reproducible_timestamp();
-        let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
-
-        let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
-        let total_size = Self::total_entry_size(&mut archive, None)?;
-
-        Self::show_write_progress(ui, total_size, archive.len() as u64);
-
-        PB.with(|local_buf| {
-            let mut buf = local_buf.borrow_mut();
-            let mut pos = 0u64;
-            for i in 0..archive.len() {
-                let mut f = archive.by_index(i)?;
-                let name = f.name().to_string();
-
-                if Self::is_sig_file(&name) {
-                    continue;
-                }
-
-                let (compression, mode) = (f.compression(), f.unix_mode().unwrap_or(0o644));
-                Self::start_copied_entry(&mut writer, &name, compression, mode, timestamp)?;
-
-                if name.ends_with(".zip") {
-                    ui.info(&format!("Nested: {}", name));
-                    let tmpdir = tempdir()?;
-                    let (src, signed) = (
-                        tmpdir.path().join("nested-src.zip"),
-                        tmpdir.path().join("nested-signed.zip"),
-                    );
-
-                    ui.debug(&format!("Tmp dir: {:?}", tmpdir.path()));
-                    if ui.debug {
-                        ui.info(&format!("Dir: {:?}", tmpdir.path()));
-                    }
-                    ui.debug(&format!("Extr: {:?}", src));
-
-                    {
-                        let mut out = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .truncate(true)
-                            .open(&src)?;
-                        let n = Self::copy_tracked(&mut f, &mut out, &mut *buf, ui, pos)?;
-                        ui.debug(&format!("Extr: {} bytes to: {}", n, src.display()));
-                    }
-
-                    ui.debug(&format!("Sign: {} -> {}", src.display(), signed.display()));
-                    Self::sign_nested_src(&src, &signed, keys, ui)?;
-
-                    let mut nested_file = BufReader::new(File::open(&signed)?);
-                    let total_read =
-                        Self::copy_tracked(&mut nested_file, &mut writer, &mut *buf, ui, pos)?;
-                    ui.debug(&format!("Embed: {} ({} bytes)", name, total_read));
-                    ui.debug(&format!("Cleanup: {:?}", tmpdir.path()));
-                    pos += total_read + f.size();
-                } else {
-                    let total_read = Self::copy_tracked(&mut f, &mut writer, &mut *buf, ui, pos)?;
-                    ui.debug(&format!("Copy: {} ({} bytes)", name, total_read));
-                    pos += total_read;
-                }
-
-                if ui.verbose && !ui.has_progress_bar() {
-                    ui.update_progress((i + 1) as u64);
-                }
-            }
-            Ok::<(), SignerError>(())
-        })?;
-
-        Self::finalize_zip_writer(writer, output, ui, "Output")?;
-        Ok(())
-    }
-
     pub fn write_signed_zip_with_sources(
         input: &Path,
         output: &Path,
@@ -333,8 +259,8 @@ impl ArtifactProcessor {
 
         Self::show_write_progress(ui, total_size, archive.len() as u64);
 
-        PB.with(|local_buf| {
-            let mut buf = local_buf.borrow_mut();
+        let mut buf = vec![0u8; BUFFER_SIZE];
+        {
             let mut pos = 0u64;
             for i in 0..archive.len() {
                 let mut f = archive.by_index(i)?;
@@ -363,7 +289,7 @@ impl ArtifactProcessor {
                 }
             }
             Ok::<(), SignerError>(())
-        })?;
+        }?;
 
         Self::finalize_zip_writer(writer, output, ui, "Sources")?;
         Ok(())
@@ -407,17 +333,20 @@ impl ArtifactProcessor {
         Ok(())
     }
 
+    /// One shared digest-field name for everything this tool writes.
+    pub(crate) const DIGEST_FIELD: &'static str = "SHA-256-Digest";
+
     pub(crate) fn is_sig_file(name: &str) -> bool {
-        name.starts_with("META-INF/")
-            && (name == MANIFEST_NAME
-                || name == CERT_SF_NAME
-                || name == CERT_RSA_NAME
-                || name == CERT_DSA_NAME
-                || name.ends_with("/MANIFEST.MF")
-                || name.ends_with(".SF")
-                || name.ends_with(".RSA")
-                || name.ends_with(".DSA")
-                || name.ends_with(".EC"))
+        // JAR signature entries sit directly in META-INF/, never in a subdir.
+        let Some(rest) = name.strip_prefix("META-INF/") else {
+            return false;
+        };
+        !rest.contains('/')
+            && (rest == "MANIFEST.MF"
+                || rest.ends_with(".SF")
+                || rest.ends_with(".RSA")
+                || rest.ends_with(".DSA")
+                || rest.ends_with(".EC"))
     }
 
     fn write_entry(
@@ -467,10 +396,10 @@ impl ArtifactProcessor {
         out.extend_from_slice(&line);
     }
 
-    pub(crate) fn create_manifest_entry(name: &str, hash: &str) -> Vec<u8> {
+    pub(crate) fn create_manifest_entry(name: &str, field: &str, hash: &str) -> Vec<u8> {
         let mut entry = Vec::with_capacity(name.len() + hash.len() + 50);
         Self::write_manifest_line(&mut entry, "Name", name);
-        Self::write_manifest_line(&mut entry, "SHA1-Digest", hash);
+        Self::write_manifest_line(&mut entry, field, hash);
         entry.extend_from_slice(b"\r\n");
         entry
     }
@@ -483,7 +412,7 @@ impl ArtifactProcessor {
         Self::write_manifest_line(&mut out, "Created-By", APP_NAME);
         out.extend_from_slice(b"\r\n");
         for (name, hash) in digests {
-            out.extend(Self::create_manifest_entry(name, hash));
+            out.extend(Self::create_manifest_entry(name, Self::DIGEST_FIELD, hash));
         }
         out
     }
@@ -492,15 +421,15 @@ impl ArtifactProcessor {
         let mut out = Vec::new();
         out.extend_from_slice(b"Signature-Version: 1.0\r\n");
         Self::write_manifest_line(&mut out, "Created-By", APP_NAME);
-        let manifest_hash = CryptoEngine::compute_sha1(manifest_bytes);
-        Self::write_manifest_line(&mut out, "SHA1-Digest-Manifest", &manifest_hash);
+        let manifest_hash = CryptoEngine::compute_sha256(manifest_bytes);
+        Self::write_manifest_line(&mut out, "SHA-256-Digest-Manifest", &manifest_hash);
         out.extend_from_slice(b"\r\n");
         for name in digests.keys() {
             if let Some(fh) = digests.get(name) {
-                let meb = Self::create_manifest_entry(name, fh);
-                let meh = CryptoEngine::compute_sha1(&meb);
+                let meb = Self::create_manifest_entry(name, Self::DIGEST_FIELD, fh);
+                let meh = CryptoEngine::compute_sha256(&meb);
                 Self::write_manifest_line(&mut out, "Name", name);
-                Self::write_manifest_line(&mut out, "SHA1-Digest", &meh);
+                Self::write_manifest_line(&mut out, Self::DIGEST_FIELD, &meh);
                 out.extend_from_slice(b"\r\n");
             }
         }
@@ -515,7 +444,7 @@ impl ArtifactProcessor {
         Self::verify_zip_integrity_with_ui(path, None)
     }
 
-    fn verify_entry_crc(f: &mut zip::read::ZipFile, buf: &mut [u8]) -> Result<(), SignerError> {
+    fn verify_entry_crc<R: Read>(f: &mut zip::read::ZipFile<R>, buf: &mut [u8]) -> Result<(), SignerError> {
         let mut hasher = Crc32::new();
         loop {
             let n = f.read(buf)?;
@@ -619,6 +548,12 @@ mod tests {
         assert!(!ArtifactProcessor::is_sig_file(
             "META-INF/services/somefile"
         ));
+        assert!(!ArtifactProcessor::is_sig_file(
+            "META-INF/services/foo.RSA"
+        ));
+        assert!(!ArtifactProcessor::is_sig_file(
+            "META-INF/sub/MANIFEST.MF"
+        ));
     }
 
     #[test]
@@ -674,10 +609,14 @@ mod tests {
 
     #[test]
     fn test_create_manifest_entry() {
-        let entry = ArtifactProcessor::create_manifest_entry("test.txt", "abc123");
+        let entry = ArtifactProcessor::create_manifest_entry(
+            "test.txt",
+            ArtifactProcessor::DIGEST_FIELD,
+            "abc123",
+        );
         let s = String::from_utf8(entry).unwrap();
         assert!(s.contains("Name: test.txt"));
-        assert!(s.contains("SHA1-Digest: abc123"));
+        assert!(s.contains("SHA-256-Digest: abc123"));
         assert!(s.ends_with("\r\n\r\n"));
     }
 
@@ -701,8 +640,8 @@ mod tests {
         let s = String::from_utf8(mf).unwrap();
         assert!(s.contains("Name: file1.txt"));
         assert!(s.contains("Name: file2.txt"));
-        assert!(s.contains("SHA1-Digest: hash1"));
-        assert!(s.contains("SHA1-Digest: hash2"));
+        assert!(s.contains("SHA-256-Digest: hash1"));
+        assert!(s.contains("SHA-256-Digest: hash2"));
     }
 
     #[test]
@@ -713,7 +652,7 @@ mod tests {
         let sf = ArtifactProcessor::gen_sf(&mf, &digests);
         let s = String::from_utf8(sf).unwrap();
         assert!(s.contains("Signature-Version: 1.0"));
-        assert!(s.contains("SHA1-Digest-Manifest"));
+        assert!(s.contains("SHA-256-Digest-Manifest"));
         assert!(s.contains("Name: a.txt"));
     }
 }

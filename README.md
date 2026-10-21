@@ -4,7 +4,7 @@
 
 **High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.**
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases)
 </div>
 
 ---
@@ -16,8 +16,8 @@
 - **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety.
 - **🔒 Deterministic timestamps:** Uses the certificate's creation date for all ZIP entries (reproducible builds).
 - **🔍 Recursive Signing:** Automatically detects and signs nested `.zip` files inside archives.
-- **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-1/SHA-256) for signature generation and verification.
-- **💾 In-Place Signing:** Smart `--inplace` mode with automatic backup for efficient workflow.
+- **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-256; SHA-1/384/512 accepted on read) for signature generation and verification.
+- **💾 In-Place Signing:** Smart `--inplace` mode with a timestamped `.bak` backup kept for safety.
 - **🔑 Flexible Keys:** Use your own PK8/PEM keys or fallback to embedded developer keys for quick testing.
 - **✅ Comprehensive Verification:** Verify the integrity and authenticity of existing archives with detailed validation.
 - **🔌 Pipeline Support:** Full stdin/stdout support for integration in automated workflows.

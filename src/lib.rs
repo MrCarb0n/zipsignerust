@@ -30,7 +30,7 @@ pub mod certificate;
 
 pub const APP_NAME: &str = "ZipSignerust";
 pub const APP_BIN_NAME: &str = "zipsignerust";
-pub const APP_VERSION: &str = "1.0.0";
+pub const APP_VERSION: &str = "2.0.0";
 pub const APP_AUTHOR: &str = "Tiash H Kabir / @MrCarb0n";
 pub const APP_ABOUT: &str = "High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.";
 pub const BUFFER_SIZE: usize = 64 * 1024;

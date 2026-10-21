@@ -44,6 +44,8 @@ pub struct Config {
     pub key_path: Option<PathBuf>,
     /// Path to custom certificate/public key file (if provided)
     pub cert_path: Option<PathBuf>,
+    /// Expected signer certificate SHA-256 fingerprint (verify only)
+    pub pin: Option<String>,
     /// Whether to overwrite existing output files
     pub overwrite: bool,
     /// Whether output should be written to stdout
@@ -271,6 +273,7 @@ impl Config {
             mode: Mode::Sign { inplace },
             key_path,
             cert_path,
+            pin: None,
             overwrite,
             is_stdout,
             quiet,
@@ -315,6 +318,7 @@ impl Config {
 
         // Private key is irrelevant for verify, but we parse it if passed (unlikely in this mode)
         let key_path = None;
+        let pin = matches.get_one::<String>("pin").cloned();
 
         Ok(Self {
             input_path,
@@ -322,6 +326,7 @@ impl Config {
             mode: Mode::Verify,
             key_path,
             cert_path,
+            pin,
             overwrite: false,
             is_stdout: false,
             quiet,
