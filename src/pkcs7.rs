@@ -18,6 +18,71 @@ use crate::{error::SignerError, keys::KeyChain};
 use simple_asn1::{from_der, ASN1Block, BigInt, BigUint, OID};
 use x509_parser::prelude::*;
 
+const MAX_ASN1_DEPTH: usize = 64;
+
+fn check_asn1_depth(der: &[u8], max_depth: usize) -> Result<(), SignerError> {
+    fn read_len(input: &[u8], i: &mut usize) -> Option<usize> {
+        let b = *input.get(*i)?;
+        *i += 1;
+        if b & 0x80 == 0 {
+            return Some(b as usize);
+        }
+        let n = (b & 0x7f) as usize;
+        if n == 0 || n > 4 || *i + n > input.len() {
+            return None;
+        }
+        let mut len = 0usize;
+        for _ in 0..n {
+            len = (len << 8) | input[*i] as usize;
+            *i += 1;
+        }
+        Some(len)
+    }
+    fn walk(
+        input: &[u8],
+        mut i: usize,
+        end: usize,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<usize> {
+        if depth > max_depth {
+            return None;
+        }
+        while i < end {
+            let tag = *input.get(i)?;
+            i += 1;
+            if tag == 0x00 && *input.get(i - 1)? == 0x00 {
+                // allow simple cases; still need length parse guarded below
+            }
+            if i >= input.len() {
+                return None;
+            }
+            let len = read_len(input, &mut i)?;
+            let next = i.checked_add(len)?;
+            if next > end || next > input.len() {
+                return None;
+            }
+            let constructed = tag & 0x20 != 0;
+            if constructed {
+                i = walk(input, i, next, depth + 1, max_depth)?;
+            } else {
+                i = next;
+            }
+        }
+        if i == end {
+            Some(i)
+        } else {
+            None
+        }
+    }
+    if walk(der, 0, der.len(), 0, max_depth).is_none() {
+        return Err(SignerError::Validation(
+            "Malformed or too deeply nested ASN.1 structure".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn encode_len(sz: usize) -> Vec<u8> {
     if sz < 128 {
         vec![sz as u8]
@@ -141,13 +206,15 @@ impl DigestAlgorithm {
 /// PKCS7 signer info extracted from a signature blob.
 pub struct SignerInfo {
     pub signature: Vec<u8>,
-    pub auth_attrs_der: Vec<u8>,
-    pub message_digest: Vec<u8>,
+    pub signed_data: Vec<u8>,
+    pub message_digest: Option<Vec<u8>>,
     pub digest_algorithm: DigestAlgorithm,
+    pub cert_ders: Vec<Vec<u8>>,
 }
 
-/// Extract PKCS7 signer info: signature_bytes, auth_attrs_der_with_set_tag, expected_sf_digest
+/// Extract PKCS7 signer info: signature bytes, data covered by signature, and optional messageDigest.
 pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> {
+    check_asn1_depth(pkcs7_der, MAX_ASN1_DEPTH)?;
     let asn1_err = |e| SignerError::Validation(format!("PKCS7 parse error: {}", e));
     let top = from_der(pkcs7_der).map_err(asn1_err)?;
     let ci = seq_items(
@@ -160,14 +227,16 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
         Some(ASN1Block::Explicit(_, _, _, inner)) => seq_items(inner.as_ref(), "SignedData")?,
         _ => return Err(SignerError::Validation("SignedData not found".into())),
     };
-    // SignedData holds two SETs (digestAlgorithms, signerInfos): want the last.
+    let cert_ders = extract_cert_ders(pkcs7_der);
+
+    // SignedData holds digestAlgorithms SET and signerInfos SET.
     let si_items = sd_seq
         .iter()
         .filter_map(|b| match b {
             ASN1Block::Set(_, v) => Some(v.as_slice()),
             _ => None,
         })
-        .last()
+        .next_back()
         .ok_or_else(|| SignerError::Validation("SignerInfos not found".into()))?;
     let si = seq_items(
         si_items
@@ -175,7 +244,6 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
             .ok_or_else(|| SignerError::Validation("Empty SignerInfos".into()))?,
         "SignerInfo",
     )?;
-    // SignerInfo layout: version, sid, digestAlgorithm, [0] attrs, ...
     let digest_algorithm = si
         .get(2)
         .and_then(|b| match b {
@@ -188,12 +256,6 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
         .ok_or_else(|| {
             SignerError::Validation("Unsupported or missing PKCS7 digest algorithm".into())
         })?;
-    // Authenticated attributes live in the [0] slot.
-    let attrs_slot = si
-        .iter()
-        .find(|b| matches!(b, ASN1Block::Explicit(..) | ASN1Block::Unknown(..)))
-        .ok_or_else(|| SignerError::Validation("Authenticated attributes not found".into()))?;
-    let (attr_items, auth_attrs_der) = attrs_set(attrs_slot)?;
     let signature = si
         .iter()
         .find_map(|b| match b {
@@ -201,19 +263,68 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
             _ => None,
         })
         .ok_or_else(|| SignerError::Validation("Signature not found".into()))?;
-    let md_oid = simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4);
-    let digest = attr_items
+
+    // Authenticated attributes are optional for interop; if present verify over them.
+    let attrs_slot = si
         .iter()
-        .find_map(|a| attr_digest(a, &md_oid))
-        .ok_or_else(|| {
-            SignerError::Validation("messageDigest not found in authenticated attributes".into())
-        })?;
+        .find(|b| matches!(b, ASN1Block::Explicit(..) | ASN1Block::Unknown(..)));
+    let (signed_data, message_digest) = if let Some(slot) = attrs_slot {
+        let (attr_items, auth_attrs_der) = attrs_set(slot)?;
+        let md_oid = simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4);
+        let digest = attr_items.iter().find_map(|a| attr_digest(a, &md_oid));
+        (auth_attrs_der, digest)
+    } else {
+        (Vec::new(), None)
+    };
     Ok(SignerInfo {
         signature,
-        auth_attrs_der,
-        message_digest: digest,
+        signed_data,
+        message_digest,
         digest_algorithm,
+        cert_ders,
     })
+}
+
+fn read_der_len(input: &[u8]) -> Option<(usize, usize)> {
+    let b = *input.first()?;
+    if b & 0x80 == 0 {
+        return Some((b as usize, 1));
+    }
+    let n = (b & 0x7f) as usize;
+    if n == 0 || n > 4 || 1 + n > input.len() {
+        return None;
+    }
+    let mut len = 0usize;
+    for j in 0..n {
+        len = (len << 8) | input[1 + j] as usize;
+    }
+    Some((len, 1 + n))
+}
+
+fn extract_cert_ders(pkcs7_der: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 2 < pkcs7_der.len() {
+        if pkcs7_der[i] == 0xA0 {
+            if let Some((len, hlen)) = read_der_len(&pkcs7_der[i + 1..]) {
+                let start = i + 1 + hlen;
+                let end = start.saturating_add(len);
+                if end <= pkcs7_der.len() {
+                    if let Ok(parts) = from_der(&pkcs7_der[start..end]) {
+                        for p in parts {
+                            if let Ok(cd) = simple_asn1::to_der(&p) {
+                                if X509Certificate::from_der(&cd).is_ok() {
+                                    out.push(cd);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
@@ -402,7 +513,7 @@ mod tests {
                 ASN1Block::Set(_, v) => Some(v.as_slice()),
                 _ => None,
             })
-            .last()
+            .next_back()
             .unwrap();
         let si = seq_items(signer_infos.first().unwrap(), "SignerInfo").unwrap();
         let sid = seq_items(&si[1], "IssuerAndSerialNumber").unwrap();
@@ -429,7 +540,10 @@ mod tests {
         let sha384 = simple_asn1::oid!(2, 16, 840, 1, 101, 3, 4, 2, 2);
         let sha512 = simple_asn1::oid!(2, 16, 840, 1, 101, 3, 4, 2, 3);
         let md5 = simple_asn1::oid!(1, 2, 840, 113549, 2, 5);
-        assert_eq!(DigestAlgorithm::from_oid(&sha1), Some(DigestAlgorithm::Sha1));
+        assert_eq!(
+            DigestAlgorithm::from_oid(&sha1),
+            Some(DigestAlgorithm::Sha1)
+        );
         assert_eq!(
             DigestAlgorithm::from_oid(&sha256),
             Some(DigestAlgorithm::Sha256)

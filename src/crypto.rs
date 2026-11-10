@@ -80,7 +80,7 @@ impl CryptoEngine {
             processed += count as u64;
 
             if let Some(ui) = ui {
-                if ui.debug && processed % (BUFFER_SIZE as u64 * 10) == 0 {
+                if ui.debug && processed.is_multiple_of(BUFFER_SIZE as u64 * 10) {
                     ui.trace(&format!("Digest: {} bytes", processed));
                 }
             }

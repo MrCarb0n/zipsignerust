@@ -6,7 +6,7 @@
 # Basic signing (creates output file)
 zipsignerust sign input.zip signed-output.zip
 
-# Sign in-place (updates input file, keeps a timestamped .bak backup)
+# Sign in-place (updates input file, keeps a unique timestamped .bak backup)
 zipsignerust sign --inplace input.zip
 
 # Custom keys (the two options are required together and must match)
@@ -18,6 +18,8 @@ zipsignerust -v sign input.zip output.zip
 # Pipeline support: read from stdin and write to stdout
 cat input.zip | zipsignerust sign - - > signed_output.zip
 ```
+
+`sign` rejects using the same file as input and output (except `--inplace`) and refuses manifest-unsafe entry names such as names containing newlines. Duplicate entry names are rejected. Backup files are never overwritten if a same-second backup already exists.
 
 ### Example Output
 
@@ -55,10 +57,7 @@ zipsignerust verify signed-archive.zip
 # Verify with verbose output (shows detailed validation)
 zipsignerust -v verify signed-archive.zip
 
-# Verify against specific certificate
-zipsignerust verify signed-archive.zip --public-key my-cert.pem
-
-# Verify the signer certificate fingerprint (colons optional, case-insensitive)
+# Verify the embedded signer certificate fingerprint (colons optional, case-insensitive)
 zipsignerust verify signed-archive.zip --pin AA:BB:CC:…
 ```
 

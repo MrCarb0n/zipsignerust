@@ -20,9 +20,9 @@ use crate::{
 };
 use crc32fast::Hasher as Crc32;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Write},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 use tempfile::tempdir;
@@ -44,6 +44,7 @@ impl ArtifactProcessor {
         path: &Path,
         ui: &Ui,
     ) -> Result<BTreeMap<String, String>, SignerError> {
+        Self::reject_duplicate_entries(path)?;
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let len = archive.len();
         ui.debug(&format!("Digests: {} entries in {}", len, path.display()));
@@ -98,6 +99,7 @@ impl ArtifactProcessor {
         keys: &KeyChain,
         ui: &Ui,
     ) -> Result<NestedDigests, SignerError> {
+        Self::reject_duplicate_entries(path)?;
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let (mut digests, mut nested_files) = (BTreeMap::new(), BTreeMap::new());
 
@@ -257,6 +259,7 @@ impl ArtifactProcessor {
         let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
         let total_size = Self::total_entry_size(&mut archive, Some(nested_files))?;
 
+        Self::reject_duplicate_entries(input)?;
         Self::show_write_progress(ui, total_size, archive.len() as u64);
 
         let mut buf = vec![0u8; BUFFER_SIZE];
@@ -281,7 +284,7 @@ impl ArtifactProcessor {
                     }
                     pos += nested_bytes.len() as u64;
                 } else {
-                    pos += Self::copy_tracked(&mut f, &mut writer, &mut *buf, ui, pos)?;
+                    pos += Self::copy_tracked(&mut f, &mut writer, &mut buf, ui, pos)?;
                 }
 
                 if ui.verbose && !ui.has_progress_bar() {
@@ -303,8 +306,8 @@ impl ArtifactProcessor {
     ) -> Result<ZipWriter<BufWriter<File>>, SignerError> {
         let mut writer =
             ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
-        let mf = Self::gen_manifest(digests);
-        let sf = Self::gen_sf(&mf, digests);
+        let mf = Self::gen_manifest(digests)?;
+        let sf = Self::gen_sf(&mf, digests)?;
         let rsa = Self::gen_rsa(keys, &sf)?;
 
         Self::write_entry(&mut writer, MANIFEST_NAME, &mf, timestamp)?;
@@ -364,76 +367,94 @@ impl ArtifactProcessor {
         Ok(())
     }
 
-    pub(crate) fn is_non_wrapping_field(key: &str) -> bool {
-        key == "Name" || key.contains("-Digest") || key.contains("_Digest")
-    }
-
-    pub(crate) fn write_manifest_line(out: &mut Vec<u8>, key: &str, value: &str) {
-        let line = if Self::is_non_wrapping_field(key) {
-            let line = format!("{}: {}", key, value).into_bytes();
-            let mut result = Vec::with_capacity(line.len() + 2);
-            result.extend_from_slice(&line);
-            result.extend_from_slice(b"\r\n");
-            result
-        } else {
-            let line = format!("{}: {}", key, value).into_bytes();
-            let mut result = Vec::with_capacity(line.len() + 10);
-            let mut cursor = 0;
-            let chunk_size = std::cmp::min(line.len(), 72);
-            result.extend_from_slice(&line[cursor..cursor + chunk_size]);
-            result.extend_from_slice(b"\r\n");
-            cursor += chunk_size;
-            while cursor < line.len() {
-                result.push(b' ');
-                let remaining = line.len() - cursor;
-                let chunk_size = std::cmp::min(remaining, 71);
-                result.extend_from_slice(&line[cursor..cursor + chunk_size]);
-                result.extend_from_slice(b"\r\n");
-                cursor += chunk_size;
+    pub(crate) fn write_manifest_line(
+        out: &mut Vec<u8>,
+        key: &str,
+        value: &str,
+    ) -> Result<(), SignerError> {
+        if key.contains('\r')
+            || key.contains('\n')
+            || key.contains(':')
+            || value.contains('\r')
+            || value.contains('\n')
+        {
+            return Err(SignerError::Validation(format!(
+                "Invalid manifest header characters in '{}'",
+                key
+            )));
+        }
+        let line = format!("{}: {}", key, value);
+        let bytes = line.as_bytes();
+        let mut start = 0usize;
+        let mut limit = 72usize;
+        while start < bytes.len() {
+            let mut end = (start + limit).min(bytes.len());
+            while end > start && end < bytes.len() && !line.is_char_boundary(end) {
+                end -= 1;
             }
-            result
-        };
-        out.extend_from_slice(&line);
+            if end == start {
+                return Err(SignerError::Validation(
+                    "Cannot wrap manifest header line".into(),
+                ));
+            }
+            if start == 0 {
+                out.extend_from_slice(&bytes[start..end]);
+            } else {
+                out.push(b' ');
+                out.extend_from_slice(&bytes[start..end]);
+            }
+            out.extend_from_slice(b"\r\n");
+            start = end;
+            limit = 71;
+        }
+        Ok(())
     }
 
-    pub(crate) fn create_manifest_entry(name: &str, field: &str, hash: &str) -> Vec<u8> {
+    pub(crate) fn create_manifest_entry(
+        name: &str,
+        field: &str,
+        hash: &str,
+    ) -> Result<Vec<u8>, SignerError> {
         let mut entry = Vec::with_capacity(name.len() + hash.len() + 50);
-        Self::write_manifest_line(&mut entry, "Name", name);
-        Self::write_manifest_line(&mut entry, field, hash);
+        Self::write_manifest_line(&mut entry, "Name", name)?;
+        Self::write_manifest_line(&mut entry, field, hash)?;
         entry.extend_from_slice(b"\r\n");
-        entry
+        Ok(entry)
     }
 
-    fn gen_manifest(digests: &BTreeMap<String, String>) -> Vec<u8> {
+    fn gen_manifest(digests: &BTreeMap<String, String>) -> Result<Vec<u8>, SignerError> {
         let mut out = Vec::with_capacity(
             50 + digests.len() * 100 + digests.values().map(|h| h.len()).sum::<usize>(),
         );
         out.extend_from_slice(b"Manifest-Version: 1.0\r\n");
-        Self::write_manifest_line(&mut out, "Created-By", APP_NAME);
+        Self::write_manifest_line(&mut out, "Created-By", APP_NAME)?;
         out.extend_from_slice(b"\r\n");
         for (name, hash) in digests {
-            out.extend(Self::create_manifest_entry(name, Self::DIGEST_FIELD, hash));
+            out.extend(Self::create_manifest_entry(name, Self::DIGEST_FIELD, hash)?);
         }
-        out
+        Ok(out)
     }
 
-    fn gen_sf(manifest_bytes: &[u8], digests: &BTreeMap<String, String>) -> Vec<u8> {
+    fn gen_sf(
+        manifest_bytes: &[u8],
+        digests: &BTreeMap<String, String>,
+    ) -> Result<Vec<u8>, SignerError> {
         let mut out = Vec::new();
         out.extend_from_slice(b"Signature-Version: 1.0\r\n");
-        Self::write_manifest_line(&mut out, "Created-By", APP_NAME);
+        Self::write_manifest_line(&mut out, "Created-By", APP_NAME)?;
         let manifest_hash = CryptoEngine::compute_sha256(manifest_bytes);
-        Self::write_manifest_line(&mut out, "SHA-256-Digest-Manifest", &manifest_hash);
+        Self::write_manifest_line(&mut out, "SHA-256-Digest-Manifest", &manifest_hash)?;
         out.extend_from_slice(b"\r\n");
         for name in digests.keys() {
             if let Some(fh) = digests.get(name) {
-                let meb = Self::create_manifest_entry(name, Self::DIGEST_FIELD, fh);
+                let meb = Self::create_manifest_entry(name, Self::DIGEST_FIELD, fh)?;
                 let meh = CryptoEngine::compute_sha256(&meb);
-                Self::write_manifest_line(&mut out, "Name", name);
-                Self::write_manifest_line(&mut out, Self::DIGEST_FIELD, &meh);
+                Self::write_manifest_line(&mut out, "Name", name)?;
+                Self::write_manifest_line(&mut out, Self::DIGEST_FIELD, &meh)?;
                 out.extend_from_slice(b"\r\n");
             }
         }
-        out
+        Ok(out)
     }
 
     fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
@@ -444,7 +465,7 @@ impl ArtifactProcessor {
         Self::verify_zip_integrity_with_ui(path, None)
     }
 
-    fn verify_entry_crc<R: Read>(f: &mut zip::read::ZipFile<R>, buf: &mut [u8]) -> Result<(), SignerError> {
+    fn verify_entry_crc(f: &mut zip::read::ZipFile<'_>, buf: &mut [u8]) -> Result<(), SignerError> {
         let mut hasher = Crc32::new();
         loop {
             let n = f.read(buf)?;
@@ -465,7 +486,57 @@ impl ArtifactProcessor {
         Ok(())
     }
 
+    pub fn reject_duplicate_entries(path: &Path) -> Result<(), SignerError> {
+        let mut file = File::open(path)?;
+        let len = file.metadata()?.len();
+        let read_len = len.min(70_000) as usize;
+        file.seek(SeekFrom::End(-(read_len as i64)))?;
+        let mut tail = vec![0u8; read_len];
+        file.read_exact(&mut tail)?;
+        let eocd = tail
+            .windows(22)
+            .rposition(|w| w.starts_with(b"PK\x05\x06"))
+            .ok_or_else(|| SignerError::Validation("Cannot locate ZIP central directory".into()))?;
+        let total = u16::from_le_bytes(tail[eocd + 10..eocd + 12].try_into().unwrap()) as usize;
+        let cd_size = u32::from_le_bytes(tail[eocd + 12..eocd + 16].try_into().unwrap()) as u64;
+        let cd_off = u32::from_le_bytes(tail[eocd + 16..eocd + 20].try_into().unwrap()) as u64;
+        if cd_off == u32::MAX as u64 || cd_size == u32::MAX as u64 || total == 0xFFFF {
+            // ZIP64/complex: best effort; rely on downstream checks.
+            return Ok(());
+        }
+        file.seek(SeekFrom::Start(cd_off))?;
+        let mut cd = vec![0u8; cd_size as usize];
+        file.read_exact(&mut cd)?;
+        let mut seen = BTreeSet::new();
+        let mut i = 0usize;
+        let mut count = 0usize;
+        while i + 46 <= cd.len() && count < total {
+            if &cd[i..i + 4] != b"PK\x01\x02" {
+                break;
+            }
+            let name_len = u16::from_le_bytes(cd[i + 28..i + 30].try_into().unwrap()) as usize;
+            let extra_len = u16::from_le_bytes(cd[i + 30..i + 32].try_into().unwrap()) as usize;
+            let comment_len = u16::from_le_bytes(cd[i + 32..i + 34].try_into().unwrap()) as usize;
+            let start = i + 46;
+            let end = start + name_len;
+            if end > cd.len() {
+                break;
+            }
+            let name = String::from_utf8_lossy(&cd[start..end]).to_string();
+            if !seen.insert(name.clone()) {
+                return Err(SignerError::Validation(format!(
+                    "Duplicate archive entry '{}'",
+                    name
+                )));
+            }
+            i = end + extra_len + comment_len;
+            count += 1;
+        }
+        Ok(())
+    }
+
     pub fn verify_zip_integrity_with_ui(path: &Path, ui: Option<&Ui>) -> Result<(), SignerError> {
+        Self::reject_duplicate_entries(path)?;
         let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
         let mut total_size = 0u64;
         for i in 0..archive.len() {
@@ -548,40 +619,14 @@ mod tests {
         assert!(!ArtifactProcessor::is_sig_file(
             "META-INF/services/somefile"
         ));
-        assert!(!ArtifactProcessor::is_sig_file(
-            "META-INF/services/foo.RSA"
-        ));
-        assert!(!ArtifactProcessor::is_sig_file(
-            "META-INF/sub/MANIFEST.MF"
-        ));
+        assert!(!ArtifactProcessor::is_sig_file("META-INF/services/foo.RSA"));
+        assert!(!ArtifactProcessor::is_sig_file("META-INF/sub/MANIFEST.MF"));
     }
 
     #[test]
-    fn test_is_non_wrapping_field_name() {
-        assert!(ArtifactProcessor::is_non_wrapping_field("Name"));
-    }
-
-    #[test]
-    fn test_is_non_wrapping_field_digest() {
-        assert!(ArtifactProcessor::is_non_wrapping_field("SHA1-Digest"));
-        assert!(ArtifactProcessor::is_non_wrapping_field("SHA-256-Digest"));
-        assert!(ArtifactProcessor::is_non_wrapping_field(
-            "SHA1-Digest-Manifest"
-        ));
-    }
-
-    #[test]
-    fn test_is_non_wrapping_field_other() {
-        assert!(!ArtifactProcessor::is_non_wrapping_field("Created-By"));
-        assert!(!ArtifactProcessor::is_non_wrapping_field(
-            "Manifest-Version"
-        ));
-    }
-
-    #[test]
-    fn test_write_manifest_line_non_wrapping() {
+    fn test_write_manifest_line_short() {
         let mut out = Vec::new();
-        ArtifactProcessor::write_manifest_line(&mut out, "Name", "test.txt");
+        ArtifactProcessor::write_manifest_line(&mut out, "Name", "test.txt").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "Name: test.txt\r\n");
     }
 
@@ -589,12 +634,11 @@ mod tests {
     fn test_write_manifest_line_wrapping() {
         let long_val = "A".repeat(100);
         let mut out = Vec::new();
-        ArtifactProcessor::write_manifest_line(&mut out, "Created-By", &long_val);
+        ArtifactProcessor::write_manifest_line(&mut out, "Created-By", &long_val).unwrap();
         let s = String::from_utf8(out).unwrap();
         assert!(s.starts_with("Created-By: "));
         assert!(s.ends_with("\r\n"));
         assert!(s.len() > 100);
-        // Check wrapping: second line should start with space
         let lines: Vec<&str> = s.split("\r\n").collect();
         for line in &lines[1..] {
             if !line.is_empty() {
@@ -608,12 +652,19 @@ mod tests {
     }
 
     #[test]
+    fn test_write_manifest_line_rejects_newline() {
+        let mut out = Vec::new();
+        assert!(ArtifactProcessor::write_manifest_line(&mut out, "Name", "a\nb").is_err());
+    }
+
+    #[test]
     fn test_create_manifest_entry() {
         let entry = ArtifactProcessor::create_manifest_entry(
             "test.txt",
             ArtifactProcessor::DIGEST_FIELD,
             "abc123",
-        );
+        )
+        .unwrap();
         let s = String::from_utf8(entry).unwrap();
         assert!(s.contains("Name: test.txt"));
         assert!(s.contains("SHA-256-Digest: abc123"));
@@ -623,11 +674,10 @@ mod tests {
     #[test]
     fn test_gen_manifest_empty() {
         let digests = BTreeMap::new();
-        let mf = ArtifactProcessor::gen_manifest(&digests);
+        let mf = ArtifactProcessor::gen_manifest(&digests).unwrap();
         let s = String::from_utf8(mf).unwrap();
         assert!(s.starts_with("Manifest-Version: 1.0\r\n"));
         assert!(s.contains("Created-By"));
-        // No file entries
         assert_eq!(s.matches("Name:").count(), 0);
     }
 
@@ -636,7 +686,7 @@ mod tests {
         let mut digests = BTreeMap::new();
         digests.insert("file1.txt".into(), "hash1".into());
         digests.insert("file2.txt".into(), "hash2".into());
-        let mf = ArtifactProcessor::gen_manifest(&digests);
+        let mf = ArtifactProcessor::gen_manifest(&digests).unwrap();
         let s = String::from_utf8(mf).unwrap();
         assert!(s.contains("Name: file1.txt"));
         assert!(s.contains("Name: file2.txt"));
@@ -648,8 +698,8 @@ mod tests {
     fn test_gen_sf_manifest_hash() {
         let mut digests = BTreeMap::new();
         digests.insert("a.txt".into(), "h1".into());
-        let mf = ArtifactProcessor::gen_manifest(&digests);
-        let sf = ArtifactProcessor::gen_sf(&mf, &digests);
+        let mf = ArtifactProcessor::gen_manifest(&digests).unwrap();
+        let sf = ArtifactProcessor::gen_sf(&mf, &digests).unwrap();
         let s = String::from_utf8(sf).unwrap();
         assert!(s.contains("Signature-Version: 1.0"));
         assert!(s.contains("SHA-256-Digest-Manifest"));

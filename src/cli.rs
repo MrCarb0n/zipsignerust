@@ -16,7 +16,6 @@
 
 use crate::{
     config::{self, Config},
-    crypto::CryptoEngine,
     error::SignerError,
     keys::KeyChain,
     ui::{SummaryField, Ui},
@@ -24,13 +23,15 @@ use crate::{
     *,
 };
 use clap::{Arg, ArgAction, Command};
+use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub fn run() -> Result<(), SignerError> {
     // NOTE: `-h/--help` is handled by clap itself (`arg_required_else_help`
     // below prints help when no args are given). No hand-rolled help here.
-    let matches = Command::new(APP_NAME)
+    let mut cmd = Command::new(APP_NAME)
         .bin_name(binary_name())
         .version(APP_VERSION)
         .author(APP_AUTHOR)
@@ -124,8 +125,8 @@ pub fn run() -> Result<(), SignerError> {
                 .long("version")
                 .action(ArgAction::SetTrue)
                 .help("Print version information"),
-        )
-        .get_matches();
+        );
+    let matches = cmd.clone().get_matches();
 
     if matches.get_flag("version_custom") {
         let mut ui = Ui::new(false, false, false, false, true);
@@ -134,7 +135,13 @@ pub fn run() -> Result<(), SignerError> {
         return Ok(());
     }
 
-    let verbosity_level = matches.get_count("verbose") as u8;
+    if matches.subcommand().is_none() {
+        cmd.print_help().ok();
+        println!();
+        return Ok(());
+    }
+
+    let verbosity_level = matches.get_count("verbose");
     let quiet = matches.get_flag("quiet");
     let mut ui = Ui::from_verbosity_level(verbosity_level, quiet, true);
 
@@ -142,10 +149,6 @@ pub fn run() -> Result<(), SignerError> {
     ui.force_color_on_windows();
 
     ui.print_banner();
-
-    if matches.subcommand().is_none() {
-        return Err(SignerError::Config("No command provided".into()));
-    }
 
     run_logic(&matches, &ui)
 }
@@ -193,40 +196,20 @@ fn prepare_output_tempfile(
 fn run_verify(config: &Config, ui: &Ui) -> Result<(), SignerError> {
     let key_chain = KeyChain::for_verification(config.cert_path.as_deref(), ui)?;
 
-    if let Some(expected) = &config.pin {
-        let der = key_chain.cert_der.as_deref().ok_or_else(|| {
-            SignerError::Config("No certificate loaded for --pin check".into())
-        })?;
-        let actual = CryptoEngine::sha256_fingerprint(der);
-        if !CryptoEngine::fingerprints_match(&actual, expected) {
-            return Err(SignerError::Validation(format!(
-                "Certificate fingerprint mismatch: expected {}, got {}",
-                expected, actual
-            )));
-        }
-        ui.info(&format!("Certificate pin matched: {}", actual));
-    }
-
     ui.print_mode_header("VERIFICATION MODE");
     ui.info(&format!(
         "Verifying integrity: {}",
         config.input_path.display()
     ));
 
-    if let Some(ref cert_path) = config.cert_path {
-        ui.info(&format!(
-            "Using custom certificate for verification: {}",
-            cert_path.display()
-        ));
-    } else {
-        ui.info("Using default development certificate for verification");
-    }
+    ui.info("Using embedded signer certificate for verification");
 
     ui.info(&format!(
         "Starting verification process for: {}",
         config.input_path.display()
     ));
-    if ArtifactVerifier::verify(&config.input_path, &key_chain, ui)? {
+    if ArtifactVerifier::verify_with_pin(&config.input_path, &key_chain, ui, config.pin.as_deref())?
+    {
         ui.success("Signature valid. Artifact authentic.");
         ui.info("Verification completed successfully");
         if ui.verbose {
@@ -308,7 +291,7 @@ fn run_sign(
     ));
 
     let working_input = if inplace {
-        let backup = append_backup_suffix(&config.input_path);
+        let backup = append_backup_suffix(&config.input_path)?;
         ui.debug(&format!(
             "Creating backup: {} -> {}",
             config.input_path.display(),
@@ -321,7 +304,27 @@ fn run_sign(
         config.input_path.clone()
     };
 
+    if !inplace && !config.is_stdout && same_file(&working_input, &config.output_path)? {
+        return Err(SignerError::Config(
+            "Input and output paths must differ; use --inplace to sign in place.".into(),
+        ));
+    }
+
     ui.info("Signing artifact...");
+    let (write_path, staged_output) = if config.is_stdout {
+        (config.output_path.clone(), None)
+    } else {
+        let parent = config
+            .output_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let staged = tempfile::Builder::new()
+            .prefix(".zipsignerust-")
+            .suffix(".tmp")
+            .tempfile_in(parent)
+            .map_err(|e| SignerError::Config(format!("Failed to create temp output: {e}")))?;
+        (staged.path().to_path_buf(), Some(staged))
+    };
     ui.debug(&format!(
         "Writing signed output to: {}",
         config.output_path.display()
@@ -337,7 +340,7 @@ fn run_sign(
 
     let write_result = processor::ArtifactProcessor::write_signed_zip_with_sources(
         &working_input,
-        &config.output_path,
+        &write_path,
         &key_chain,
         &nested.digests,
         &nested.nested_files,
@@ -346,6 +349,15 @@ fn run_sign(
 
     match write_result {
         Ok(_) => {
+            if let Some(staged) = staged_output {
+                if let Err(e) = staged.persist(&config.output_path) {
+                    let err = SignerError::Io(e.error);
+                    if inplace {
+                        return Err(restore_backup(working_input, &config.input_path, err, ui));
+                    }
+                    return Err(err);
+                }
+            }
             ui.debug(&format!(
                 "Successfully wrote signed archive to: {}",
                 config.output_path.display()
@@ -449,20 +461,43 @@ fn binary_name() -> String {
 }
 
 /// Timestamped backup path: `input.zip` -> `input.zip.260114092033.bak`
-/// (`yymmddhhmmss`, UTC), so a later backup cannot overwrite an earlier one.
-fn append_backup_suffix(path: &std::path::Path) -> std::path::PathBuf {
+/// (`yymmddhhmmss`, UTC), reserved uniquely so an existing backup is never overwritten.
+fn append_backup_suffix(path: &Path) -> io::Result<PathBuf> {
     let now = x509_parser::prelude::ASN1Time::now().to_datetime();
-    let mut s = path.as_os_str().to_owned();
-    s.push(format!(
-        ".{:02}{:02}{:02}{:02}{:02}{:02}.bak",
+    let stamp = format!(
+        ".{:02}{:02}{:02}{:02}{:02}{:02}",
         now.year() % 100,
         now.month() as u8,
         now.day(),
         now.hour(),
         now.minute(),
         now.second()
-    ));
-    std::path::PathBuf::from(s)
+    );
+    let base = {
+        let mut s = path.as_os_str().to_owned();
+        s.push(&stamp);
+        PathBuf::from(s)
+    };
+    let candidate = {
+        let mut s = base.as_os_str().to_owned();
+        s.push(".bak");
+        PathBuf::from(s)
+    };
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    for i in 1u32.. {
+        let mut s = base.as_os_str().to_owned();
+        s.push(format!(".{i}.bak"));
+        let p = PathBuf::from(s);
+        if !p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free backup name",
+    ))
 }
 
 /// Rename `src` to `dst`, falling back to copy+remove if the rename crosses
@@ -491,4 +526,14 @@ fn is_cross_device(e: &std::io::Error) -> bool {
     // ponytail: std maps EXDEV/ERROR_NOT_SAME_DEVICE to CrossesDevices; raw 18/17 kept for old toolchains
     e.kind() == std::io::ErrorKind::CrossesDevices
         || matches!(e.raw_os_error(), Some(18) | Some(17))
+}
+
+fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
+    if a == b {
+        return Ok(true);
+    }
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => Ok(a == b),
+        _ => Ok(false),
+    }
 }
