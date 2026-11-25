@@ -14,8 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use zip::ZipArchive;
 
 use crate::{crypto::CryptoEngine, error::SignerError, keys::KeyChain, pkcs7, MANIFEST_NAME};
@@ -57,17 +56,37 @@ impl ArtifactVerifier {
     /// Check signature validity and optionally bind to embedded signer certificate fingerprint.
     pub fn verify_with_pin(
         path: &std::path::Path,
-        _keys: &KeyChain,
+        keys: &KeyChain,
         ui: &crate::ui::Ui,
         pin: Option<&str>,
     ) -> Result<bool, SignerError> {
+        Self::verify_trusted(path, Some(keys), ui, pin)
+    }
+
+    pub(crate) fn verify_trusted(
+        path: &std::path::Path,
+        keys: Option<&KeyChain>,
+        ui: &crate::ui::Ui,
+        pin: Option<&str>,
+    ) -> Result<bool, SignerError> {
+        let trusted_key = keys
+            .map(|keys| {
+                keys.public_key
+                    .as_ref()
+                    .ok_or_else(|| SignerError::Config("Missing trusted public key".into()))
+            })
+            .transpose()?;
+        if trusted_key.is_none() && pin.is_none() {
+            return Err(SignerError::Config(
+                "A trusted key or certificate pin is required".into(),
+            ));
+        }
         ui.debug(&format!(
             "Starting verification for archive: {}",
             path.display()
         ));
 
-        crate::processor::ArtifactProcessor::reject_duplicate_entries(path)?;
-        let mut archive = ZipArchive::new(File::open(path)?)?;
+        let mut archive = crate::processor::ArtifactProcessor::open_zip(path)?;
         ui.info(&format!("Opened archive with {} entries", archive.len()));
 
         let (sf_name, block_name) = Self::find_signature_files(&mut archive)?;
@@ -87,9 +106,7 @@ impl ArtifactVerifier {
             signer_info.digest_algorithm
         ));
 
-        let signer_cert = signer_info.cert_ders.first().cloned().ok_or_else(|| {
-            SignerError::Validation("No signer certificate found in signature".into())
-        })?;
+        let signer_cert = signer_info.signer_cert_der;
         let (_, cert) = x509_parser::prelude::X509Certificate::from_der(&signer_cert)
             .map_err(|e| SignerError::Validation(format!("Invalid signer certificate: {e}")))?;
         if let Some(expected) = pin {
@@ -102,18 +119,23 @@ impl ArtifactVerifier {
             }
             ui.info(&format!("Certificate pin matched: {}", actual));
         }
-        let public_key = cert.public_key().subject_public_key.data.as_ref().to_vec();
+        let public_key = cert.public_key().subject_public_key.data.as_ref();
+        if trusted_key.is_some_and(|key| key.as_ref() != public_key) {
+            return Err(SignerError::Validation(
+                "Embedded signer does not match the trusted public key".into(),
+            ));
+        }
         let signed_payload = if signer_info.signed_data.is_empty() {
-            sf_file_bytes.clone()
+            &sf_file_bytes
         } else {
-            signer_info.signed_data.clone()
+            &signer_info.signed_data
         };
         ui.debug("Verifying RSA signature...");
         let verifier = ring::signature::UnparsedPublicKey::new(
             signer_info.digest_algorithm.verification_algorithm(),
             public_key,
         );
-        if let Err(e) = verifier.verify(&signed_payload, &signer_info.signature) {
+        if let Err(e) = verifier.verify(signed_payload, &signer_info.signature) {
             ui.debug(&format!("RSA signature verification failed: {}", e));
             return Err(SignerError::Validation(format!(
                 "Signature verification failed: {}. This could be due to: invalid certificate, corrupted signature, mismatched key pair, or archive tampering.",
@@ -263,7 +285,7 @@ impl ArtifactVerifier {
     }
 
     fn find_signature_files(
-        archive: &mut ZipArchive<File>,
+        archive: &mut ZipArchive<impl Read + Seek>,
     ) -> Result<(String, String), SignerError> {
         let mut sf = None;
         for i in 0..archive.len() {

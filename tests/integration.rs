@@ -173,6 +173,90 @@ fn test_sign_and_verify_roundtrip() {
     let verify_keys = KeyChain::new(None, None, &ui).unwrap();
     let valid = ArtifactVerifier::verify(&signed, &verify_keys, &ui).unwrap();
     assert!(valid, "sign-then-verify round-trip must pass");
+
+    let mut wrong = verify_keys;
+    let mut wrong_key = wrong.public_key.as_ref().unwrap().as_ref().to_vec();
+    let middle = wrong_key.len() / 2;
+    wrong_key[middle] ^= 1;
+    wrong.public_key = Some(ring::signature::UnparsedPublicKey::new(
+        zipsignerust::keys::RSA_VERIFICATION_ALGORITHM,
+        wrong_key,
+    ));
+    let err = ArtifactVerifier::verify_with_pin(&signed, &wrong, &ui, Some(DEFAULT_CERT_SHA256))
+        .unwrap_err();
+    assert!(err.to_string().contains("trusted public key"));
+}
+
+#[test]
+fn test_signing_does_not_clobber_input_or_existing_output() {
+    let tmp = TempDir::new().unwrap();
+    let ui = silent_ui();
+    let keys = KeyChain::new(None, None, &ui).unwrap();
+    let input = create_test_zip(tmp.path(), "input.zip", &[("data.txt", b"original")]);
+    let original = std::fs::read(&input).unwrap();
+    let nested = ArtifactProcessor::compute_digests_prepare_nested(&input, &keys, &ui).unwrap();
+    assert!(ArtifactProcessor::write_signed_zip_with_sources(
+        &input,
+        &input,
+        &keys,
+        &nested.digests,
+        &nested.nested_files,
+        &ui,
+    )
+    .is_err());
+    assert_eq!(std::fs::read(&input).unwrap(), original);
+
+    let sign = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_zipsignerust"))
+            .current_dir(tmp.path())
+            .arg("sign")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let output = tmp.path().join("out.zip");
+    std::fs::write(&output, b"keep me").unwrap();
+    assert!(!sign(&["input.zip", "out.zip"]).status.success());
+    assert_eq!(std::fs::read(output).unwrap(), b"keep me");
+    #[cfg(unix)]
+    {
+        let alias = tmp.path().join("alias.zip");
+        std::fs::hard_link(&input, &alias).unwrap();
+        assert!(!sign(&["--overwrite", "input.zip", "alias.zip"])
+            .status
+            .success());
+        assert_eq!(std::fs::read(alias).unwrap(), original);
+    }
+
+    assert!(sign(&["--inplace", "input.zip"]).status.success());
+    assert!(ArtifactVerifier::verify(&input, &keys, &ui).unwrap());
+    assert!(sign(&["--inplace", "input.zip"]).status.success());
+    let backups: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "bak"))
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+    assert_eq!(backups.len(), 2);
+    assert!(backups.contains(&original));
+
+    let invalid = create_test_zip(tmp.path(), "invalid.zip", &[("bad\nname", b"keep me")]);
+    let original = std::fs::read(&invalid).unwrap();
+    assert!(!sign(&["--inplace", "invalid.zip"]).status.success());
+    assert_eq!(std::fs::read(invalid).unwrap(), original);
+}
+
+#[test]
+fn test_valid_zip64_directory() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("zip64.zip");
+    let mut zip = ZipWriter::new(std::fs::File::create(&path).unwrap());
+    zip.set_zip64_comment(Some("ZIP64"));
+    zip.start_file("payload.txt", FileOptions::<()>::default())
+        .unwrap();
+    zip.write_all(b"payload").unwrap();
+    zip.finish().unwrap();
+    ArtifactProcessor::verify_zip_integrity(&path).unwrap();
 }
 
 #[test]

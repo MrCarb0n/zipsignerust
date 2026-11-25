@@ -154,47 +154,19 @@ pub fn run() -> Result<(), SignerError> {
 }
 
 fn run_logic(matches: &clap::ArgMatches, ui: &Ui) -> Result<(), SignerError> {
-    let mut config = Config::from_matches(matches, ui)?;
-
-    let output_temp_file = prepare_output_tempfile(&mut config, ui)?;
-
-    let result = match config.mode.clone() {
+    let config = Config::from_matches(matches, ui)?;
+    match config.mode {
         config::Mode::Verify => run_verify(&config, ui),
-        config::Mode::Sign { inplace } => run_sign(&config, &output_temp_file, inplace, ui),
-    };
-
-    // NamedTempFile cleans up on drop; keep it alive through the function.
-    drop(output_temp_file);
-
-    result
-}
-
-fn prepare_output_tempfile(
-    config: &mut Config,
-    ui: &Ui,
-) -> Result<Option<NamedTempFile>, SignerError> {
-    if !config.is_stdout {
-        return Ok(None);
+        config::Mode::Sign { inplace } => run_sign(&config, inplace, ui),
     }
-    let temp_file = NamedTempFile::new().map_err(|e| {
-        SignerError::Config(format!("Failed to create temp file for stdout: {}", e))
-    })?;
-    ui.debug(&format!(
-        "Created temporary output file: {:?}",
-        temp_file.path()
-    ));
-    if config.verbose {
-        ui.info(&format!(
-            "Using temporary output file: {:?}",
-            temp_file.path()
-        ));
-    }
-    config.output_path = temp_file.path().to_path_buf();
-    Ok(Some(temp_file))
 }
 
 fn run_verify(config: &Config, ui: &Ui) -> Result<(), SignerError> {
-    let key_chain = KeyChain::for_verification(config.cert_path.as_deref(), ui)?;
+    let key_chain = if config.cert_path.is_some() || config.pin.is_none() {
+        Some(KeyChain::for_verification(config.cert_path.as_deref(), ui)?)
+    } else {
+        None
+    };
 
     ui.print_mode_header("VERIFICATION MODE");
     ui.info(&format!(
@@ -202,31 +174,28 @@ fn run_verify(config: &Config, ui: &Ui) -> Result<(), SignerError> {
         config.input_path.display()
     ));
 
-    ui.info("Using embedded signer certificate for verification");
-
     ui.info(&format!(
         "Starting verification process for: {}",
         config.input_path.display()
     ));
-    if ArtifactVerifier::verify_with_pin(&config.input_path, &key_chain, ui, config.pin.as_deref())?
-    {
-        ui.success("Signature valid. Artifact authentic.");
+    if ArtifactVerifier::verify_trusted(
+        &config.input_path,
+        key_chain.as_ref(),
+        ui,
+        config.pin.as_deref(),
+    )? {
+        ui.success("Signature valid for the expected signer.");
         ui.info("Verification completed successfully");
         if ui.verbose {
             eprintln!();
         }
     } else {
-        ui.info("Verification completed - signature is invalid");
+        return Err(SignerError::Validation("Signature is invalid".into()));
     }
     Ok(())
 }
 
-fn run_sign(
-    config: &Config,
-    output_temp_file: &Option<NamedTempFile>,
-    inplace: bool,
-    ui: &Ui,
-) -> Result<(), SignerError> {
+fn run_sign(config: &Config, inplace: bool, ui: &Ui) -> Result<(), SignerError> {
     ui.info("Loading keys...");
     let key_chain = KeyChain::new(config.key_path.as_deref(), config.cert_path.as_deref(), ui)?;
 
@@ -257,18 +226,13 @@ fn run_sign(
 
     if config.is_stdout {
         ui.info("Target: <stdout pipe>");
-        if let Some(ref temp_file) = output_temp_file {
-            ui.debug(&format!("Temporary output file: {:?}", temp_file.path()));
-        }
     } else {
         ui.info(&format!("Target: {}", config.output_path.display()));
     }
 
-    if config.output_path.exists() && !inplace && !config.overwrite && !config.is_stdout {
-        return Err(SignerError::Config(format!(
-            "Output exists: {}. Use --overwrite.",
-            config.output_path.display()
-        )));
+    use processor::ArtifactProcessor;
+    if !inplace && !config.is_stdout {
+        ArtifactProcessor::check_distinct_paths(&config.input_path, &config.output_path)?;
     }
 
     ui.info("Computing digests...");
@@ -290,97 +254,60 @@ fn run_sign(
         nested.nested_files.len()
     ));
 
-    let working_input = if inplace {
-        let backup = append_backup_suffix(&config.input_path)?;
-        ui.debug(&format!(
-            "Creating backup: {} -> {}",
-            config.input_path.display(),
-            backup.display()
-        ));
-        rename_or_copy(&config.input_path, &backup)?;
-        ui.warn(&format!("Backup created: {}", backup.display()));
-        backup
-    } else {
-        config.input_path.clone()
-    };
-
-    if !inplace && !config.is_stdout && same_file(&working_input, &config.output_path)? {
-        return Err(SignerError::Config(
-            "Input and output paths must differ; use --inplace to sign in place.".into(),
-        ));
-    }
-
     ui.info("Signing artifact...");
-    let (write_path, staged_output) = if config.is_stdout {
-        (config.output_path.clone(), None)
+    let temp_dir = std::env::temp_dir();
+    let output = if inplace {
+        fs::canonicalize(&config.input_path)?
     } else {
-        let parent = config
-            .output_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
-        let staged = tempfile::Builder::new()
-            .prefix(".zipsignerust-")
-            .suffix(".tmp")
-            .tempfile_in(parent)
-            .map_err(|e| SignerError::Config(format!("Failed to create temp output: {e}")))?;
-        (staged.path().to_path_buf(), Some(staged))
+        config.output_path.clone()
     };
-    ui.debug(&format!(
-        "Writing signed output to: {}",
-        config.output_path.display()
-    ));
-    ui.debug(&format!(
-        "Using {} digests for signing",
-        nested.digests.len()
-    ));
-    ui.debug(&format!(
-        "Processing {} nested files",
-        nested.nested_files.len()
-    ));
-
-    let write_result = processor::ArtifactProcessor::write_signed_zip_with_sources(
-        &working_input,
-        &write_path,
+    let directory = if config.is_stdout {
+        &temp_dir
+    } else {
+        ArtifactProcessor::output_dir(&output)
+    };
+    let mut staged = ArtifactProcessor::stage_signed_zip(
+        &config.input_path,
+        directory,
         &key_chain,
         &nested.digests,
         &nested.nested_files,
         ui,
-    );
-
-    match write_result {
-        Ok(_) => {
-            if let Some(staged) = staged_output {
-                if let Err(e) = staged.persist(&config.output_path) {
-                    let err = SignerError::Io(e.error);
-                    if inplace {
-                        return Err(restore_backup(working_input, &config.input_path, err, ui));
-                    }
-                    return Err(err);
-                }
-            }
-            ui.debug(&format!(
-                "Successfully wrote signed archive to: {}",
-                config.output_path.display()
-            ));
-            finish_sign(config, &working_input, inplace, ui)?;
-            Ok(())
-        }
-        Err(e) => {
-            if inplace {
-                return Err(restore_backup(working_input, &config.input_path, e, ui));
-            }
-            Err(e)
-        }
+    )?;
+    if config.is_stdout {
+        io::copy(staged.as_file_mut(), &mut io::stdout())?;
+        return Ok(());
     }
+    let backup = if inplace {
+        let backup = create_backup(&output)?;
+        ui.warn(&format!("Backup created: {}", backup.display()));
+        staged
+            .as_file()
+            .set_permissions(fs::metadata(&output)?.permissions())?;
+        Some(backup)
+    } else {
+        None
+    };
+    if inplace || config.overwrite {
+        staged.persist(&output).map_err(|e| e.error)?;
+    } else {
+        staged.persist_noclobber(&output).map_err(|e| {
+            if e.error.kind() == io::ErrorKind::AlreadyExists {
+                SignerError::Config(format!(
+                    "Output exists: {}. Use --overwrite.",
+                    output.display()
+                ))
+            } else {
+                e.error.into()
+            }
+        })?;
+    }
+    finish_sign(config, backup.as_deref(), ui);
+    Ok(())
 }
 
-fn finish_sign(
-    config: &Config,
-    working_input: &std::path::Path,
-    inplace: bool,
-    ui: &Ui,
-) -> Result<(), SignerError> {
-    if inplace {
+fn finish_sign(config: &Config, backup: Option<&Path>, ui: &Ui) {
+    if let Some(working_input) = backup {
         ui.success("In-place signing complete.");
         ui.info(&format!("Backup kept: {}", working_input.display()));
         if ui.verbose {
@@ -397,12 +324,6 @@ fn finish_sign(
                 SummaryField::new("Key Used", key_type.to_string()),
             ],
         );
-    } else if config.is_stdout {
-        ui.debug("Copying final output to stdout...");
-        let mut file = std::fs::File::open(&config.output_path)?;
-        let mut stdout = io::stdout();
-        io::copy(&mut file, &mut stdout)?;
-        ui.debug("Successfully wrote to stdout");
     } else {
         ui.success("Archive successfully signed.");
         if ui.verbose {
@@ -419,30 +340,6 @@ fn finish_sign(
                 SummaryField::new("Key Used", key_type.to_string()),
             ],
         );
-    }
-    Ok(())
-}
-
-fn restore_backup(
-    working_input: std::path::PathBuf,
-    original: &std::path::Path,
-    signing_err: SignerError,
-    ui: &Ui,
-) -> SignerError {
-    match rename_or_copy(&working_input, original) {
-        Ok(_) => {
-            ui.error("Original file restored from backup.");
-            signing_err
-        }
-        Err(restore_err) => {
-            ui.error(&format!("CRITICAL: Backup restore failed: {}", restore_err));
-            SignerError::Config(format!(
-                "Signing failed AND restore failed. Error: {}. Restore: {}. Backup: {}",
-                signing_err,
-                restore_err,
-                working_input.display()
-            ))
-        }
     }
 }
 
@@ -462,7 +359,7 @@ fn binary_name() -> String {
 
 /// Timestamped backup path: `input.zip` -> `input.zip.260114092033.bak`
 /// (`yymmddhhmmss`, UTC), reserved uniquely so an existing backup is never overwritten.
-fn append_backup_suffix(path: &Path) -> io::Result<PathBuf> {
+fn create_backup(path: &Path) -> io::Result<PathBuf> {
     let now = x509_parser::prelude::ASN1Time::now().to_datetime();
     let stamp = format!(
         ".{:02}{:02}{:02}{:02}{:02}{:02}",
@@ -473,67 +370,29 @@ fn append_backup_suffix(path: &Path) -> io::Result<PathBuf> {
         now.minute(),
         now.second()
     );
-    let base = {
-        let mut s = path.as_os_str().to_owned();
-        s.push(&stamp);
-        PathBuf::from(s)
-    };
-    let candidate = {
-        let mut s = base.as_os_str().to_owned();
-        s.push(".bak");
-        PathBuf::from(s)
-    };
-    if !candidate.exists() {
-        return Ok(candidate);
-    }
-    for i in 1u32.. {
-        let mut s = base.as_os_str().to_owned();
-        s.push(format!(".{i}.bak"));
-        let p = PathBuf::from(s);
-        if !p.exists() {
-            return Ok(p);
+    let mut original = fs::File::open(path)?;
+    let mut staged = NamedTempFile::new_in(processor::ArtifactProcessor::output_dir(path))?;
+    io::copy(&mut original, &mut staged)?;
+    staged
+        .as_file()
+        .set_permissions(original.metadata()?.permissions())?;
+    staged.as_file().sync_all()?;
+    for i in 0..=u32::MAX {
+        let mut name = path.as_os_str().to_owned();
+        name.push(&stamp);
+        if i != 0 {
+            name.push(format!(".{i}"));
+        }
+        name.push(".bak");
+        let backup = PathBuf::from(name);
+        match staged.persist_noclobber(&backup) {
+            Ok(_) => return Ok(backup),
+            Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => staged = err.file,
+            Err(err) => return Err(err.error),
         }
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
         "no free backup name",
     ))
-}
-
-/// Rename `src` to `dst`, falling back to copy+remove if the rename crosses
-/// a filesystem boundary (where `rename` returns `EXDEV` on Unix or
-/// `ERROR_NOT_SAME_DEVICE` on Windows).
-///
-/// This matters for `--inplace` because the working `.bak` file may live on
-/// a different filesystem than the original input (e.g. a bind-mounted
-/// `input.apk` vs a `.bak` in a normal directory).
-fn rename_or_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            if is_cross_device(&e) {
-                std::fs::copy(src, dst)?;
-                std::fs::remove_file(src)?;
-                Ok(())
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
-
-fn is_cross_device(e: &std::io::Error) -> bool {
-    // ponytail: std maps EXDEV/ERROR_NOT_SAME_DEVICE to CrossesDevices; raw 18/17 kept for old toolchains
-    e.kind() == std::io::ErrorKind::CrossesDevices
-        || matches!(e.raw_os_error(), Some(18) | Some(17))
-}
-
-fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
-    if a == b {
-        return Ok(true);
-    }
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => Ok(a == b),
-        _ => Ok(false),
-    }
 }

@@ -13,7 +13,7 @@
 
 ## What Verification Checks
 
-- **Signature Validity:** Validates the PKCS7/CMS RSA signature (SHA-1/256/384/512 digest algorithms) against the embedded signer certificate
+- **Signature Validity:** Selects the embedded signer certificate by issuer and serial number, checks it against the trusted key or pin, and verifies the RSA signature. Signed attributes must include a digest of the `.SF` file; signatures without attributes cover the file directly.
 - **Manifest Integrity:** Ensures manifest hashes match actual files (whole-manifest digest when present, and per-entry digests)
 - **Entry Consistency:** Verifies all files have corresponding entries and rejects duplicate archive entry names
 - **Digest Verification:** Checks SHA-1/256/384/512 manifest/SF digests (SHA-256 written; common interoperable variants accepted)

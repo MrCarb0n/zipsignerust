@@ -51,10 +51,7 @@ fn check_asn1_depth(der: &[u8], max_depth: usize) -> Result<(), SignerError> {
         while i < end {
             let tag = *input.get(i)?;
             i += 1;
-            if tag == 0x00 && *input.get(i - 1)? == 0x00 {
-                // allow simple cases; still need length parse guarded below
-            }
-            if i >= input.len() {
+            if tag & 0x1f == 0x1f || (tag & 0xc0 == 0 && matches!(tag, 0x10 | 0x11)) {
                 return None;
             }
             let len = read_len(input, &mut i)?;
@@ -117,27 +114,6 @@ fn seq_items<'b>(block: &'b ASN1Block, what: &str) -> Result<&'b [ASN1Block], Si
     }
 }
 
-/// Attribute items plus the re-tagged `SET OF` encoding the signature covers.
-/// The `[0]` slot holds raw SET content (Unknown) for 2+ attributes, or a
-/// single Attribute (Explicit) — both fold to the same pair.
-fn attrs_set(slot: &ASN1Block) -> Result<(Vec<ASN1Block>, Vec<u8>), SignerError> {
-    let asn1_err = |e| SignerError::Validation(format!("PKCS7 parse error: {}", e));
-    match slot {
-        ASN1Block::Unknown(_, _, _, _, bytes) => {
-            let items = from_der(bytes).map_err(asn1_err)?;
-            Ok((items, wrap_tag(0x31, bytes)))
-        }
-        ASN1Block::Explicit(_, _, _, inner) => {
-            let inner_der = simple_asn1::to_der(inner)
-                .map_err(|e| SignerError::Validation(format!("PKCS7 encode error: {}", e)))?;
-            Ok((vec![(**inner).clone()], wrap_tag(0x31, &inner_der)))
-        }
-        _ => Err(SignerError::Validation(
-            "Authenticated attributes not found".into(),
-        )),
-    }
-}
-
 /// messageDigest bytes from a single Attribute, if its OID matches.
 fn attr_digest(attr: &ASN1Block, md_oid: &OID) -> Option<Vec<u8>> {
     match attr {
@@ -152,6 +128,23 @@ fn attr_digest(attr: &ASN1Block, md_oid: &OID) -> Option<Vec<u8>> {
         },
         _ => None,
     }
+}
+
+fn signed_attrs_digest(bytes: &[u8]) -> Result<Vec<u8>, SignerError> {
+    let attrs = from_der(bytes)
+        .map_err(|e| SignerError::Validation(format!("Invalid signed attributes: {e}")))?;
+    let md_oid = simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4);
+    let mut matches = attrs.iter().filter(|attr| {
+        matches!(attr, ASN1Block::Sequence(_, items)
+            if matches!(items.first(), Some(ASN1Block::ObjectIdentifier(_, oid)) if oid == md_oid))
+    });
+    matches
+        .next()
+        .filter(|_| matches.next().is_none())
+        .and_then(|attr| attr_digest(attr, &md_oid))
+        .ok_or_else(|| {
+            SignerError::Validation("Expected one messageDigest in signed attributes".into())
+        })
 }
 
 /// Hash algorithm named in the PKCS7 SignerInfo. Drives both the RSA
@@ -209,7 +202,7 @@ pub struct SignerInfo {
     pub signed_data: Vec<u8>,
     pub message_digest: Option<Vec<u8>>,
     pub digest_algorithm: DigestAlgorithm,
-    pub cert_ders: Vec<Vec<u8>>,
+    pub signer_cert_der: Vec<u8>,
 }
 
 /// Extract PKCS7 signer info: signature bytes, data covered by signature, and optional messageDigest.
@@ -227,7 +220,6 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
         Some(ASN1Block::Explicit(_, _, _, inner)) => seq_items(inner.as_ref(), "SignedData")?,
         _ => return Err(SignerError::Validation("SignedData not found".into())),
     };
-    let cert_ders = extract_cert_ders(pkcs7_der);
 
     // SignedData holds digestAlgorithms SET and signerInfos SET.
     let si_items = sd_seq
@@ -238,12 +230,37 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
         })
         .next_back()
         .ok_or_else(|| SignerError::Validation("SignerInfos not found".into()))?;
-    let si = seq_items(
-        si_items
-            .first()
-            .ok_or_else(|| SignerError::Validation("Empty SignerInfos".into()))?,
-        "SignerInfo",
-    )?;
+    let [signer] = si_items else {
+        return Err(SignerError::Validation("Expected one PKCS7 signer".into()));
+    };
+    let si = seq_items(signer, "SignerInfo")?;
+    let invalid_signer =
+        || SignerError::Validation("Missing or ambiguous PKCS7 signer certificate".into());
+    let [issuer, ASN1Block::Integer(_, serial)] = seq_items(
+        si.get(1).ok_or_else(invalid_signer)?,
+        "IssuerAndSerialNumber",
+    )?
+    else {
+        return Err(invalid_signer());
+    };
+    let issuer = der_block(pkcs7_der, issuer.offset()).ok_or_else(invalid_signer)?;
+    let cert_slot = sd_seq.get(3).ok_or_else(invalid_signer)?.offset();
+    let mut certs = der_content(pkcs7_der, cert_slot, 0xa0).ok_or_else(invalid_signer)?;
+    let mut signer_cert_der = None;
+    while !certs.is_empty() {
+        let (rest, cert) = X509Certificate::from_der(certs).map_err(|_| invalid_signer())?;
+        let magnitude = cert.tbs_certificate.serial.to_bytes_be();
+        // v1 encoded the unsigned magnitude as a signed integer without its leading zero.
+        if cert.issuer().as_raw() == issuer
+            && (*serial == BigInt::from(cert.tbs_certificate.serial.clone())
+                || *serial == BigInt::from_signed_bytes_be(&magnitude))
+            && signer_cert_der.replace(cert.as_raw().to_vec()).is_some()
+        {
+            return Err(invalid_signer());
+        }
+        certs = rest;
+    }
+    let signer_cert_der = signer_cert_der.ok_or_else(invalid_signer)?;
     let digest_algorithm = si
         .get(2)
         .and_then(|b| match b {
@@ -256,32 +273,27 @@ pub fn extract_signer_info(pkcs7_der: &[u8]) -> Result<SignerInfo, SignerError> 
         .ok_or_else(|| {
             SignerError::Validation("Unsupported or missing PKCS7 digest algorithm".into())
         })?;
-    let signature = si
-        .iter()
-        .find_map(|b| match b {
-            ASN1Block::OctetString(_, sig) => Some(sig.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| SignerError::Validation("Signature not found".into()))?;
-
     // Authenticated attributes are optional for interop; if present verify over them.
-    let attrs_slot = si
-        .iter()
-        .find(|b| matches!(b, ASN1Block::Explicit(..) | ASN1Block::Unknown(..)));
-    let (signed_data, message_digest) = if let Some(slot) = attrs_slot {
-        let (attr_items, auth_attrs_der) = attrs_set(slot)?;
-        let md_oid = simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 4);
-        let digest = attr_items.iter().find_map(|a| attr_digest(a, &md_oid));
-        (auth_attrs_der, digest)
+    let (signed_data, message_digest) = if let Some(bytes) = si
+        .get(3)
+        .and_then(|slot| der_content(pkcs7_der, slot.offset(), 0xa0))
+    {
+        (wrap_tag(0x31, bytes), Some(signed_attrs_digest(bytes)?))
     } else {
         (Vec::new(), None)
     };
+    let signature_index = if message_digest.is_some() { 5 } else { 4 };
+    let (Some(ASN1Block::Sequence(..)), Some(ASN1Block::OctetString(_, signature))) =
+        (si.get(signature_index - 1), si.get(signature_index))
+    else {
+        return Err(SignerError::Validation("Signature not found".into()));
+    };
     Ok(SignerInfo {
-        signature,
+        signature: signature.clone(),
         signed_data,
         message_digest,
         digest_algorithm,
-        cert_ders,
+        signer_cert_der,
     })
 }
 
@@ -301,30 +313,16 @@ fn read_der_len(input: &[u8]) -> Option<(usize, usize)> {
     Some((len, 1 + n))
 }
 
-fn extract_cert_ders(pkcs7_der: &[u8]) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i + 2 < pkcs7_der.len() {
-        if pkcs7_der[i] == 0xA0 {
-            if let Some((len, hlen)) = read_der_len(&pkcs7_der[i + 1..]) {
-                let start = i + 1 + hlen;
-                let end = start.saturating_add(len);
-                if end <= pkcs7_der.len() {
-                    if let Ok(parts) = from_der(&pkcs7_der[start..end]) {
-                        for p in parts {
-                            if let Ok(cd) = simple_asn1::to_der(&p) {
-                                if X509Certificate::from_der(&cd).is_ok() {
-                                    out.push(cd);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        i += 1;
-    }
-    out
+fn der_block(der: &[u8], offset: usize) -> Option<&[u8]> {
+    let input = der.get(offset..)?;
+    let (len, header) = read_der_len(input.get(1..)?)?;
+    input.get(..len.checked_add(header + 1)?)
+}
+
+fn der_content(der: &[u8], offset: usize, tag: u8) -> Option<&[u8]> {
+    let block = der_block(der, offset)?;
+    let (_, header) = read_der_len(&block[1..])?;
+    (block[0] == tag).then_some(&block[header + 1..])
 }
 
 pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
@@ -492,6 +490,28 @@ pub fn gen_rsa(keys: &KeyChain, sf: &[u8]) -> Result<Vec<u8>, SignerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_attrs_require_message_digest() {
+        let content_type = ASN1Block::Sequence(
+            0,
+            vec![
+                ASN1Block::ObjectIdentifier(0, simple_asn1::oid!(1, 2, 840, 113549, 1, 9, 3)),
+                ASN1Block::Set(
+                    0,
+                    vec![ASN1Block::ObjectIdentifier(
+                        0,
+                        simple_asn1::oid!(1, 2, 840, 113549, 1, 7, 1),
+                    )],
+                ),
+            ],
+        );
+        let attrs = simple_asn1::to_der(&content_type).unwrap();
+        assert!(signed_attrs_digest(&attrs)
+            .unwrap_err()
+            .to_string()
+            .contains("messageDigest"));
+    }
 
     #[test]
     fn test_signer_serial_positive_and_matches_cert() {

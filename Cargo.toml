@@ -20,7 +20,7 @@ ring = "0.17"
 pem = "3.0"
 base64 = "0.22"
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "suggestions", "error-context"] }
-zip = { version = "2.4", default-features = false, features = ["deflate", "bzip2", "time"] }
+zip = { version = "~2.4.2", default-features = false, features = ["deflate", "bzip2", "time"] }
 x509-parser = "0.18"
 tempfile = "3.10"
 crc32fast = "1.3"

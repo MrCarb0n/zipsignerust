@@ -20,12 +20,12 @@ use crate::{
 };
 use crc32fast::Hasher as Crc32;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::Path,
 };
-use tempfile::tempdir;
+use tempfile::{tempdir, NamedTempFile};
 use zip::{
     write::{FileOptions, ZipWriter},
     CompressionMethod, DateTime, ZipArchive,
@@ -44,8 +44,7 @@ impl ArtifactProcessor {
         path: &Path,
         ui: &Ui,
     ) -> Result<BTreeMap<String, String>, SignerError> {
-        Self::reject_duplicate_entries(path)?;
-        let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
+        let mut archive = Self::open_zip(path)?;
         let len = archive.len();
         ui.debug(&format!("Digests: {} entries in {}", len, path.display()));
 
@@ -99,8 +98,7 @@ impl ArtifactProcessor {
         keys: &KeyChain,
         ui: &Ui,
     ) -> Result<NestedDigests, SignerError> {
-        Self::reject_duplicate_entries(path)?;
-        let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
+        let mut archive = Self::open_zip(path)?;
         let (mut digests, mut nested_files) = (BTreeMap::new(), BTreeMap::new());
 
         for i in 0..archive.len() {
@@ -253,13 +251,65 @@ impl ArtifactProcessor {
         nested_files: &BTreeMap<String, Vec<u8>>,
         ui: &Ui,
     ) -> Result<(), SignerError> {
-        let timestamp = keys.get_reproducible_timestamp();
-        let mut writer = Self::init_zip_writer(output, keys, digests, timestamp)?;
+        Self::check_distinct_paths(input, output)?;
+        Self::stage_signed_zip(
+            input,
+            Self::output_dir(output),
+            keys,
+            digests,
+            nested_files,
+            ui,
+        )?
+        .persist(output)
+        .map_err(|err| err.error)?;
+        Ok(())
+    }
 
-        let mut archive = ZipArchive::new(BufReader::new(File::open(input)?))?;
+    pub(crate) fn output_dir(path: &Path) -> &Path {
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    }
+
+    pub(crate) fn check_distinct_paths(input: &Path, output: &Path) -> Result<(), SignerError> {
+        let input_path = fs::canonicalize(input)?;
+        let output_path = match fs::canonicalize(output) {
+            Ok(path) => path,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (a, b) = (fs::metadata(&input_path)?, fs::metadata(&output_path)?);
+            if (a.dev(), a.ino()) == (b.dev(), b.ino()) {
+                return Err(SignerError::Config(
+                    "Input and output must differ; use --inplace.".into(),
+                ));
+            }
+        }
+        if input_path == output_path {
+            return Err(SignerError::Config(
+                "Input and output must differ; use --inplace.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stage_signed_zip(
+        input: &Path,
+        directory: &Path,
+        keys: &KeyChain,
+        digests: &BTreeMap<String, String>,
+        nested_files: &BTreeMap<String, Vec<u8>>,
+        ui: &Ui,
+    ) -> Result<NamedTempFile, SignerError> {
+        let mut archive = Self::open_zip(input)?;
+        let staged = NamedTempFile::new_in(directory)?;
+        let timestamp = keys.get_reproducible_timestamp();
+        let mut writer = Self::init_zip_writer(staged.reopen()?, keys, digests, timestamp)?;
         let total_size = Self::total_entry_size(&mut archive, Some(nested_files))?;
 
-        Self::reject_duplicate_entries(input)?;
         Self::show_write_progress(ui, total_size, archive.len() as u64);
 
         let mut buf = vec![0u8; BUFFER_SIZE];
@@ -294,18 +344,17 @@ impl ArtifactProcessor {
             Ok::<(), SignerError>(())
         }?;
 
-        Self::finalize_zip_writer(writer, output, ui, "Sources")?;
-        Ok(())
+        Self::finalize_zip_writer(writer, staged.path(), ui, "Sources")?;
+        Ok(staged)
     }
 
     fn init_zip_writer(
-        output: &Path,
+        output: File,
         keys: &KeyChain,
         digests: &BTreeMap<String, String>,
         timestamp: DateTime,
     ) -> Result<ZipWriter<BufWriter<File>>, SignerError> {
-        let mut writer =
-            ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, File::create(output)?));
+        let mut writer = ZipWriter::new(BufWriter::with_capacity(BUFFER_SIZE, output));
         let mf = Self::gen_manifest(digests)?;
         let sf = Self::gen_sf(&mf, digests)?;
         let rsa = Self::gen_rsa(keys, &sf)?;
@@ -326,7 +375,7 @@ impl ArtifactProcessor {
         if ui.verbose && ui.has_progress_bar() {
             ui.finish_progress();
         }
-        writer.finish()?;
+        writer.finish()?.flush()?;
         ui.debug(&format!("{}: {}", label, output.display()));
         // NOTE: the output file's mtime is left to the OS; only ZIP entry
         // timestamps use the certificate's `notBefore` for reproducible builds.
@@ -487,57 +536,65 @@ impl ArtifactProcessor {
     }
 
     pub fn reject_duplicate_entries(path: &Path) -> Result<(), SignerError> {
-        let mut file = File::open(path)?;
-        let len = file.metadata()?.len();
-        let read_len = len.min(70_000) as usize;
-        file.seek(SeekFrom::End(-(read_len as i64)))?;
-        let mut tail = vec![0u8; read_len];
-        file.read_exact(&mut tail)?;
-        let eocd = tail
-            .windows(22)
-            .rposition(|w| w.starts_with(b"PK\x05\x06"))
-            .ok_or_else(|| SignerError::Validation("Cannot locate ZIP central directory".into()))?;
-        let total = u16::from_le_bytes(tail[eocd + 10..eocd + 12].try_into().unwrap()) as usize;
-        let cd_size = u32::from_le_bytes(tail[eocd + 12..eocd + 16].try_into().unwrap()) as u64;
-        let cd_off = u32::from_le_bytes(tail[eocd + 16..eocd + 20].try_into().unwrap()) as u64;
-        if cd_off == u32::MAX as u64 || cd_size == u32::MAX as u64 || total == 0xFFFF {
-            // ZIP64/complex: best effort; rely on downstream checks.
-            return Ok(());
-        }
-        file.seek(SeekFrom::Start(cd_off))?;
-        let mut cd = vec![0u8; cd_size as usize];
-        file.read_exact(&mut cd)?;
-        let mut seen = BTreeSet::new();
-        let mut i = 0usize;
-        let mut count = 0usize;
-        while i + 46 <= cd.len() && count < total {
-            if &cd[i..i + 4] != b"PK\x01\x02" {
-                break;
-            }
-            let name_len = u16::from_le_bytes(cd[i + 28..i + 30].try_into().unwrap()) as usize;
-            let extra_len = u16::from_le_bytes(cd[i + 30..i + 32].try_into().unwrap()) as usize;
-            let comment_len = u16::from_le_bytes(cd[i + 32..i + 34].try_into().unwrap()) as usize;
-            let start = i + 46;
-            let end = start + name_len;
-            if end > cd.len() {
-                break;
-            }
-            let name = String::from_utf8_lossy(&cd[start..end]).to_string();
-            if !seen.insert(name.clone()) {
-                return Err(SignerError::Validation(format!(
-                    "Duplicate archive entry '{}'",
-                    name
-                )));
-            }
-            i = end + extra_len + comment_len;
-            count += 1;
-        }
+        Self::open_zip(path)?;
         Ok(())
     }
 
+    pub(crate) fn open_zip(path: &Path) -> Result<ZipArchive<BufReader<File>>, SignerError> {
+        let file = File::open(path)?;
+        let mut directory = BufReader::new(file.try_clone()?);
+        let archive = ZipArchive::new(BufReader::new(file))?;
+        let reader_position = directory.stream_position()?;
+        directory.seek(SeekFrom::Start(archive.central_directory_start()))?;
+        let invalid =
+            || SignerError::Validation("Duplicate entries or invalid ZIP central directory".into());
+        // zip 2.4 indexes by decoded name, so duplicates lower its reported entry count.
+        for _ in 0..archive.len() {
+            let mut header = [0; 46];
+            directory.read_exact(&mut header)?;
+            if &header[..4] != b"PK\x01\x02" {
+                return Err(invalid());
+            }
+            let skip: i64 = header[28..34]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i64::from(u16::from_le_bytes(*b)))
+                .sum();
+            directory.seek(SeekFrom::Current(skip))?;
+        }
+        let mut footer = [0; 4];
+        let directory_size = directory.stream_position()? - archive.central_directory_start();
+        directory.read_exact(&mut footer)?;
+        let (count, size) = match &footer {
+            b"PK\x05\x06" => {
+                let mut end = [0; 18];
+                directory.read_exact(&mut end)?;
+                (
+                    u64::from(u16::from_le_bytes(end[6..8].try_into().unwrap())),
+                    u64::from(u32::from_le_bytes(end[8..12].try_into().unwrap())),
+                )
+            }
+            b"PK\x06\x06" => {
+                let mut end = [0; 52];
+                directory.read_exact(&mut end)?;
+                (
+                    u64::from_le_bytes(end[28..36].try_into().unwrap()),
+                    u64::from_le_bytes(end[36..44].try_into().unwrap()),
+                )
+            }
+            _ => return Err(invalid()),
+        };
+        if count != archive.len() as u64 || size != directory_size {
+            return Err(invalid());
+        }
+        // The cloned file shares a cursor with the archive's buffered reader.
+        directory.seek(SeekFrom::Start(reader_position))?;
+        Ok(archive)
+    }
+
     pub fn verify_zip_integrity_with_ui(path: &Path, ui: Option<&Ui>) -> Result<(), SignerError> {
-        Self::reject_duplicate_entries(path)?;
-        let mut archive = ZipArchive::new(BufReader::new(File::open(path)?))?;
+        let mut archive = Self::open_zip(path)?;
         let mut total_size = 0u64;
         for i in 0..archive.len() {
             if let Ok(f) = archive.by_index(i) {

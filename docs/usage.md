@@ -51,8 +51,11 @@ Signing Report:
 ## Verify an Archive
 
 ```bash
-# Verify signature integrity
+# Verify against the built-in development key
 zipsignerust verify signed-archive.zip
+
+# Verify against a trusted certificate's public key
+zipsignerust verify signed-archive.zip --public-key trusted-cert.pem
 
 # Verify with verbose output (shows detailed validation)
 zipsignerust -v verify signed-archive.zip
@@ -60,6 +63,11 @@ zipsignerust -v verify signed-archive.zip
 # Verify the embedded signer certificate fingerprint (colons optional, case-insensitive)
 zipsignerust verify signed-archive.zip --pin AA:BB:CC:…
 ```
+
+Use a certificate or fingerprint obtained independently of the archive. With
+both `--public-key` and `--pin`, both checks must pass. Neither option performs
+certificate chain validation. The built-in development key is public and does
+not establish production authenticity.
 
 ## Pipeline Support
 
