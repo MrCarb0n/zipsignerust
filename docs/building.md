@@ -46,7 +46,7 @@ Results for `f0bebec`:
 | --- | --- |
 | Linux x86-64 | 94 tests passed in debug and release. Release CLI smoke checks passed. |
 | Android ARM64 and ARMv7 | Both builds linked with NDK 27.2 at API 21. On a Redmi Note 4 (API 35), each passed 64 unit and 24 integration tests, plus release CLI smoke checks. |
-| Windows and macOS | Not tested. |
+| Windows x86-64, macOS x86-64 and ARM64 | Native release tests and CLI signing and verification passed in [GitHub Actions](https://github.com/MrCarb0n/zipsignerust/actions/runs/45698912026). |
 
 Six Android integration tests per ABI were skipped because they depend on
 host paths or tools. On-device CLI checks covered signing and verification,

@@ -2,33 +2,21 @@
 
 # ZipSignerust
 
-**High-performance, memory-safe cryptographic signing and verification for Android ZIP archives.**
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases/tag/latest)
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/) [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/MrCarb0n/zipsignerust/releases)
 </div>
 
----
+Sign and verify Android ZIP archives with RSA JAR signatures. ZipSignerust signs
+nested ZIPs recursively and supports in-place signing and stdin/stdout.
 
-**ZipSignerust** is a deterministic, high-performance tool written in Rust to sign and verify Android ZIP archives. It ensures reproducible builds by using certificate creation timestamps and supports recursive signing of nested ZIP archives.
+## Installation
 
-## 🚀 Key Features
+### Binaries
 
-- **⚡ High Performance:** Written in pure Rust for maximum speed and memory safety.
-- **🔒 Deterministic timestamps:** Uses the certificate's creation date for all ZIP entries (reproducible builds).
-- **🔍 Recursive Signing:** Automatically detects and signs nested `.zip` files inside archives.
-- **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-256; SHA-1/384/512 accepted on read) for signature generation and verification.
-- **💾 In-Place Signing:** Smart `--inplace` mode with a timestamped `.bak` backup kept for safety.
-- **🔑 Flexible Keys:** Use your own PK8/PEM keys or fallback to embedded developer keys for quick testing.
-- **✅ Signer Verification:** Check archive integrity against a trusted public key or a pinned signer certificate.
-- **🔌 Pipeline Support:** Full stdin/stdout support for integration in automated workflows.
+The [rolling release](https://github.com/MrCarb0n/zipsignerust/releases/tag/latest)
+has binaries for Linux, Windows, macOS, and Android.
 
-## 📦 Installation
-
-### From Binaries
-
-Download the pre-built binary for your platform from the [Releases](https://github.com/MrCarb0n/zipsignerust/releases) page.
-
-### From Source
+### From source
 
 The project declares Rust 1.88 or newer. Build from the repository with its lockfile:
 
@@ -44,11 +32,7 @@ cargo install --locked --path .
 # The build output is target/release/zipsignerust (zipsignerust.exe on Windows).
 ```
 
-Linux and Android ARM64/ARMv7 have been tested. Windows and macOS have not
-been tested for this revision. See [Building and Testing](docs/building.md)
-for the Android cross-build and the test coverage.
-
-## 🚀 Quick Start
+## Quick start
 
 ```bash
 # Sign an archive
@@ -61,18 +45,12 @@ zipsignerust verify signed-output.zip
 The built-in development key is public. Use your own key and a trusted
 certificate or pin for production workflows.
 
-## 📚 Documentation
+## Documentation
 
-- [Usage Guide](docs/usage.md) — signing, verification, pipelines, advanced options
-- [Building and Testing](docs/building.md) — locked builds, Android targets, and test coverage
-- [Internals](docs/internals.md) — how signing works and what verification checks
+- [Usage](docs/usage.md)
+- [Build and test](docs/building.md)
+- [Signature format and verification](docs/internals.md)
 
-## 📄 License
+## License
 
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
-
----
-
-<div align="center">
-Made with ❤️ from Bangladesh 🇧🇩
-</div>
+[GPL-3.0-or-later](LICENSE).

@@ -25,31 +25,6 @@ and keep a separate, timestamped backup; an existing backup is never
 overwritten. Duplicate entries and manifest-unsafe names (such as names with
 newlines) are rejected.
 
-### Example Output
-
-When using verbose mode, ZipSignerust provides colorful, structured output:
-
-```
-+-----------------------+
-|  ZipSignerust v2.0.0  |
-+-----------------------+
-[i] Loading keys...
-
--- SIGNING MODE --
-[i] Source: input.zip
-[i] Target: output.zip
-[i] Computing digests...
-[i] Signing artifact...
-[+] Archive successfully signed.
-
-Signing Report:
-  Status          Success
-  Mode            Standard
-  Input           input.zip
-  Output          output.zip
-  Key Used        ZipSignerust Dev
-```
-
 ## Verify an Archive
 
 ```bash
@@ -94,10 +69,3 @@ ZipSignerust supports Unix-style pipelines for seamless integration in automated
 | `-v`, `--verbose`     | Enable verbose logging with progress indicators        |
 | `-q`, `--quiet`       | Suppress all output except errors                      |
 | `-V`, `--version`     | Print version information                              |
-
-## UI Features
-
-- **Color-coded output** for different message types (success, warnings, errors, info)
-- **Progress bars** for long-running operations (when using `--verbose`)
-- **Structured tables** for displaying key-value information
-- **Cross-platform color support** (including Windows terminal compatibility)

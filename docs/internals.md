@@ -1,22 +1,21 @@
 # Internals
 
-## How Signing Works
+## Signing
 
-1.  **Digest Computation:** Computes SHA-256 digests for all files in the archive, excluding signature files.
-2.  **Manifest Generation:** Creates `META-INF/MANIFEST.MF` with file paths and their SHA-256 digests (wrapped per JAR rules; invalid header characters rejected).
-3.  **Signature File:** Creates `META-INF/CERT.SF` containing digests of the manifest entries.
-4.  **RSA Signature:** Creates `META-INF/CERT.RSA` with the RSA signature of the SF file.
-5.  **Nested Processing:** Recursively processes nested ZIP files within the archive, ensuring they're signed before the parent archive.
-6.  **Safe Output:** Writes to a temporary file and rejects same input/output paths to avoid data loss; `--inplace` keeps a unique, non-overwritten backup.
-7.  **Integrity Validation:** Rejects duplicate entry names and performs CRC checks to ensure file integrity.
-8.  **Timestamp Setting:** Applies consistent timestamps for reproducible builds.
+Nested ZIPs are signed before the parent archive. The signer writes SHA-256
+file digests to `META-INF/MANIFEST.MF`, manifest digests to `META-INF/CERT.SF`,
+and the RSA signature block to `META-INF/CERT.RSA`. ZIP entry timestamps come
+from the certificate's `notBefore` date.
 
-## What Verification Checks
+The signer rejects duplicate names and checks the staged archive's CRCs before
+publishing it.
 
-- **Signature Validity:** Selects the embedded signer certificate by issuer and serial number, checks it against the trusted key or pin, and verifies the RSA signature. Signed attributes must include a digest of the `.SF` file; signatures without attributes cover the file directly.
-- **Manifest Integrity:** Ensures manifest hashes match actual files (whole-manifest digest when present, and per-entry digests)
-- **Entry Consistency:** Verifies all files have corresponding entries and rejects duplicate archive entry names
-- **Digest Verification:** Checks SHA-1/256/384/512 manifest/SF digests (SHA-256 written; common interoperable variants accepted)
-- **Structure Validation:** Ensures proper JAR signing format
-- **Integrity Check:** Performs CRC verification on all entries and rejects malformed/deeply nested signature structures
-- **`--pin`:** When supplied, requires the embedded signer certificate SHA-256 fingerprint to match the expected value (constant-time comparison)
+## Verification
+
+The verifier selects the embedded signer certificate by issuer and serial
+number, checks it against the expected public key or certificate pin, and
+verifies the RSA signature. Signed attributes must include the `.SF` digest.
+Without signed attributes, the signature covers the `.SF` file directly.
+
+The verifier checks manifest and payload digests and rejects duplicate archive
+entries. It accepts SHA-1, SHA-256, SHA-384, and SHA-512 digests for verification.
