@@ -9,7 +9,7 @@ zipsignerust sign input.zip signed-output.zip
 # Sign in-place (updates input file, keeps a unique timestamped .bak backup)
 zipsignerust sign --inplace input.zip
 
-# Custom keys (the two options are required together and must match)
+# Custom signing key and its matching certificate
 zipsignerust sign input.zip output.zip --private-key key.pem --public-key cert.pem
 
 # Verbose mode with colorful output and progress indicators
@@ -19,7 +19,11 @@ zipsignerust -v sign input.zip output.zip
 cat input.zip | zipsignerust sign - - > signed_output.zip
 ```
 
-`sign` rejects using the same file as input and output (except `--inplace`) and refuses manifest-unsafe entry names such as names containing newlines. Duplicate entry names are rejected. Backup files are never overwritten if a same-second backup already exists.
+`sign` stages the signed archive before publishing it. An existing output is
+left alone unless you pass `--overwrite`. Use `--inplace` to replace the input
+and keep a separate, timestamped backup; an existing backup is never
+overwritten. Duplicate entries and manifest-unsafe names (such as names with
+newlines) are rejected.
 
 ### Example Output
 
@@ -36,8 +40,6 @@ When using verbose mode, ZipSignerust provides colorful, structured output:
 [i] Target: output.zip
 [i] Computing digests...
 [i] Signing artifact...
-[v] Timestamp used: 2066-06-06 00:06:06 UTC
-[v] mtime set on output: output.zip
 [+] Archive successfully signed.
 
 Signing Report:

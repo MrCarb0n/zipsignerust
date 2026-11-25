@@ -19,7 +19,7 @@
 - **🛡️ Secure:** Uses industry-standard cryptography (RSA, SHA-256; SHA-1/384/512 accepted on read) for signature generation and verification.
 - **💾 In-Place Signing:** Smart `--inplace` mode with a timestamped `.bak` backup kept for safety.
 - **🔑 Flexible Keys:** Use your own PK8/PEM keys or fallback to embedded developer keys for quick testing.
-- **✅ Comprehensive Verification:** Verify the integrity and authenticity of existing archives with detailed validation.
+- **✅ Signer Verification:** Check archive integrity against a trusted public key or a pinned signer certificate.
 - **🔌 Pipeline Support:** Full stdin/stdout support for integration in automated workflows.
 
 ## 📦 Installation
@@ -30,16 +30,23 @@ Download the pre-built binary for your platform from the [Releases](https://gith
 
 ### From Source
 
+The project declares Rust 1.88 or newer. Build from the repository with its lockfile:
+
 ```bash
 # Clone the repository
 git clone https://github.com/MrCarb0n/zipsignerust.git
 cd zipsignerust
 
-# Build with cargo
-cargo build --release
+# Build or install
+cargo build --locked --release
+cargo install --locked --path .
 
-# Binary will be at target/release/zipsignerust
+# The build output is target/release/zipsignerust (zipsignerust.exe on Windows).
 ```
+
+Linux and Android ARM64/ARMv7 have been tested. Windows and macOS have not
+been tested for this revision. See [Building and Testing](docs/building.md)
+for the Android cross-build and the test coverage.
 
 ## 🚀 Quick Start
 
@@ -47,13 +54,17 @@ cargo build --release
 # Sign an archive
 zipsignerust sign input.zip signed-output.zip
 
-# Verify an archive
-zipsignerust verify signed-archive.zip
+# Verify the output against the built-in development key
+zipsignerust verify signed-output.zip
 ```
+
+The built-in development key is public. Use your own key and a trusted
+certificate or pin for production workflows.
 
 ## 📚 Documentation
 
 - [Usage Guide](docs/usage.md) — signing, verification, pipelines, advanced options
+- [Building and Testing](docs/building.md) — locked builds, Android targets, and test coverage
 - [Internals](docs/internals.md) — how signing works and what verification checks
 
 ## 📄 License
